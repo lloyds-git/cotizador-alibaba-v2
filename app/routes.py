@@ -114,3 +114,47 @@ def home(request: Request, db: SesionDep):
         "productos.html",
         {"request": request, "productos": productos},
     )
+
+
+@router.get("/exportar")
+def exportar(db: SesionDep):
+    """Genera xlsx intermedio + ejecuta llenar_formato_hd.py."""
+    import subprocess
+    import sys as _sys
+    from app.exportar import generar_formato_hd_desde_marcados
+
+    proyecto = Path(__file__).parent.parent
+    xlsx_int = proyecto / "_intermedio_seleccion.xlsx"
+    n = generar_formato_hd_desde_marcados(
+        session=db,
+        xlsx_intermedio=str(xlsx_int),
+        base_fotos=str(proyecto / "data"),
+    )
+    if n == 0:
+        raise HTTPException(400, "No hay productos marcados.")
+
+    formato = proyecto / "Formato HD-Mascotas.xlsb"
+    script = proyecto / "llenar_formato_hd.py"
+
+    # Borrar salida previa para evitar prompt interactivo de sobreescritura
+    salida_esperada = proyecto / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
+    if salida_esperada.exists():
+        try:
+            salida_esperada.unlink()
+        except PermissionError:
+            raise HTTPException(
+                500,
+                f"No puedo borrar el archivo anterior (esta abierto en Excel?): {salida_esperada.name}",
+            )
+
+    result = subprocess.run(
+        [_sys.executable, str(script), str(xlsx_int), str(formato)],
+        capture_output=True, text=True, cwd=str(proyecto),
+    )
+    if result.returncode != 0:
+        raise HTTPException(500, f"Fallo llenar_formato_hd: {result.stderr[:500]}")
+
+    if not salida_esperada.exists():
+        raise HTTPException(500, f"No encontre el archivo de salida: {salida_esperada.name}")
+
+    return FileResponse(str(salida_esperada), filename=salida_esperada.name)
