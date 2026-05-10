@@ -1,0 +1,49 @@
+# --- BD y datos generados ---
+data/*.db
+data/fotos/
+_adobe_extract_*/
+_intermedio_*.xlsx
+formato-hd-*.xlsx
+
+# --- Cotizaciones origen (PDFs/xlsx descargados) ---
+# No versionar archivos de proveedores; son grandes y privados
+*.pdf
+*.xls
+*.xlsx
+*.xlsb
+~$*
+
+# Archivos descargados con nombres truncados (2026-XX__...)
+2026-*
+# Pero sí versionar los planes con fecha
+!docs/plans/2026-*.md
+
+# Permitir solo los .md y .txt informativos
+!LEEME.txt
+!PLAN_CONSOLIDADOS_POR_CATEGORIA.md
+
+# --- Subcarpetas con datos brutos ---
+Higiene/
+rejas/
+
+# --- Logs y exports ---
+descarga_log.csv
+*.csv
+
+# --- Secretos ---
+.env
+credentials.json
+token.json
+threads_page*.json
+
+# --- Python ---
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# --- Editor ---
+.vscode/
+.idea/

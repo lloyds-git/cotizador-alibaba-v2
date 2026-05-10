@@ -1,0 +1,460 @@
+"""
+Modulo de extraccion semantica de productos usando Claude (Haiku 4.5).
+
+Se usa como fallback cuando el parser heuristico de pdf_a_formato_hd.py
+no logra extraer suficientes datos del JSON de Adobe (ej: PDFs con layout
+no-tabular como catalogos visuales).
+
+Estrategia:
+  1. Recibe el structuredData.json de Adobe y la lista de figuras.
+  2. Compacta el JSON: solo texto + coordenadas + paths (sin Font, etc.).
+  3. Le pide a Claude Haiku que identifique cada producto: SKU, descripcion, FOB.
+  4. Claude tambien asocia cada producto con la figura correspondiente
+     usando las coordenadas Y (la figura mas cercana en la misma pagina).
+  5. Devuelve [{sku, desc, fob, foto}, ...] listo para construir xlsx.
+
+Costo aproximado por PDF: ~$0.005 USD con Haiku 4.5.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import mimetypes
+import os
+import re
+import sys
+from pathlib import Path
+
+import anthropic
+from dotenv import load_dotenv
+
+
+MODELO_DEFAULT = "claude-haiku-4-5"
+# Max imagenes por request (Anthropic recomienda <=20 para mantener calidad)
+LOTE_IMAGENES = 18
+
+
+def codificar_imagen_b64(ruta: str) -> tuple[str, str]:
+    """Devuelve (media_type, base64_data) para una imagen."""
+    mt = mimetypes.guess_type(ruta)[0] or "image/png"
+    with open(ruta, "rb") as f:
+        b64 = base64.standard_b64encode(f.read()).decode("utf-8")
+    return mt, b64
+
+
+def clasificar_figuras(
+    figures_dir: str,
+    modelo: str = MODELO_DEFAULT,
+) -> dict[str, str]:
+    """
+    Clasifica cada figura del PDF como: producto, empaque, logo, diagrama, otro.
+
+    Procesa en lotes de ~18 imagenes por request. Devuelve {nombre_archivo: tipo}.
+    """
+    if not os.path.isdir(figures_dir):
+        return {}
+
+    archivos = sorted(
+        n for n in os.listdir(figures_dir)
+        if n.lower().endswith((".png", ".jpg", ".jpeg"))
+    )
+    if not archivos:
+        return {}
+
+    load_dotenv()
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError("Falta ANTHROPIC_API_KEY en .env")
+
+    print(f"  Clasificando {len(archivos)} figuras en lotes de {LOTE_IMAGENES}...")
+    client = anthropic.Anthropic()
+
+    resultado: dict[str, str] = {}
+    total_in = 0
+    total_out = 0
+
+    for inicio in range(0, len(archivos), LOTE_IMAGENES):
+        lote = archivos[inicio:inicio + LOTE_IMAGENES]
+        # Construir mensaje con imagenes + indices
+        content: list[dict] = []
+        for i, nombre in enumerate(lote):
+            ruta = os.path.join(figures_dir, nombre)
+            try:
+                mt, b64 = codificar_imagen_b64(ruta)
+            except Exception as e:
+                print(f"    Error leyendo {nombre}: {e}")
+                continue
+            content.append({
+                "type": "text",
+                "text": f"\n[Imagen {i + 1}: {nombre}]",
+            })
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": mt, "data": b64},
+            })
+
+        content.append({
+            "type": "text",
+            "text": (
+                "\n\nClasifica cada imagen anterior. Tipos posibles:\n"
+                "- producto: muestra el articulo a vender. SIEMPRE vale 'producto' si:\n"
+                "    * Hay al menos una foto/render del producto (aunque sea pequena)\n"
+                "    * Es una vista renderizada en 3D del producto\n"
+                "    * Hay cotas con flechas (647mm, 662mm) AL LADO del producto\n"
+                "    * Hay varios productos del mismo tipo o colores juntos\n"
+                "- empaque: SOLO la caja/bolsa/carton vacia, sin mostrar el producto\n"
+                "- logo: logo de marca pequeno aislado\n"
+                "- diagrama: SOLO valido si NO hay foto realista del producto;\n"
+                "    es un dibujo tecnico en lineas (exploded view, plano industrial)\n"
+                "- otro: certificaciones, sellos, texto suelto, iconos abstractos\n\n"
+                "IMPORTANTE: en caso de duda entre 'producto' y 'diagrama',\n"
+                "ELIGE 'producto'. Las cotas dimensionales son normales en fotos\n"
+                "de catalogo y NO convierten una foto de producto en diagrama.\n\n"
+                "Devuelve EXCLUSIVAMENTE un JSON valido (sin markdown):\n"
+                '{"clasificaciones": [{"archivo": "fileoutpart0.png", "tipo": "producto"}]}'
+            ),
+        })
+
+        resp = client.messages.create(
+            model=modelo,
+            max_tokens=4000,
+            messages=[{"role": "user", "content": content}],
+        )
+        total_in += resp.usage.input_tokens
+        total_out += resp.usage.output_tokens
+
+        texto = resp.content[0].text.strip()
+        m = re.search(r"```(?:json)?\s*(.*?)```", texto, re.DOTALL)
+        if m:
+            texto = m.group(1).strip()
+        try:
+            parsed = json.loads(texto)
+            for item in parsed.get("clasificaciones", []):
+                arch = item.get("archivo", "").strip()
+                tipo = item.get("tipo", "otro").strip().lower()
+                if arch:
+                    resultado[arch] = tipo
+        except json.JSONDecodeError as e:
+            # Fallback: parsear linea por linea con regex
+            print(f"    Aviso: JSON invalido en lote {inicio} ({e}), recuperando con regex")
+            rescatadas = 0
+            for m_item in re.finditer(
+                r'"archivo"\s*:\s*"([^"]+)"\s*,\s*"tipo"\s*:\s*"([^"]+)"',
+                texto,
+            ):
+                arch = m_item.group(1).strip()
+                tipo = m_item.group(2).strip().lower()
+                if arch:
+                    resultado[arch] = tipo
+                    rescatadas += 1
+            print(f"    Rescatadas {rescatadas} clasificaciones via regex")
+
+    if "haiku" in modelo.lower():
+        # Costo Haiku 4.5: $1/MTok in (incluye imagenes), $5/MTok out
+        costo = total_in / 1_000_000 * 1.0 + total_out / 1_000_000 * 5.0
+        print(f"  Clasificacion: in={total_in} out={total_out} costo=${costo:.4f}")
+
+    # Resumen
+    from collections import Counter
+    cuenta = Counter(resultado.values())
+    print(f"  Tipos detectados: {dict(cuenta)}")
+    return resultado
+
+
+def compactar_structured_data(json_path: str) -> list[dict]:
+    """
+    Reduce el JSON de Adobe a una lista de elementos minimos:
+    [{type: 'text'|'figure', page, y, text|file}, ...]
+
+    Esto reduce ~10x el tamano del JSON que mandamos a Claude sin perder info
+    relevante para la extraccion de productos.
+    """
+    with open(json_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    elementos: list[dict] = []
+    for e in data.get("elements", []):
+        path = e.get("Path", "")
+        bounds = e.get("Bounds")
+        page = e.get("Page", 0)
+        y = (bounds[1] + bounds[3]) / 2 if bounds else None
+
+        if "/Figure" in path:
+            files = e.get("filePaths") or []
+            if files:
+                elementos.append({
+                    "tipo": "figura",
+                    "p": page,
+                    "y": round(y, 1) if y else None,
+                    "archivo": files[0],
+                })
+        else:
+            texto = (e.get("Text") or "").strip()
+            texto = re.sub(r"_x000D_|\r|\n+", " ", texto)
+            texto = " ".join(texto.split())
+            if texto:
+                elementos.append({
+                    "tipo": "texto",
+                    "p": page,
+                    "y": round(y, 1) if y else None,
+                    "t": texto,
+                })
+    return elementos
+
+
+def construir_prompt(elementos: list[dict], figuras: list[str]) -> str:
+    """Construye el prompt para Claude con los elementos extraidos y las figuras disponibles."""
+    return f"""Eres un asistente que extrae productos de cotizaciones de proveedores.
+
+Te paso el contenido de un PDF de cotizacion que Adobe extrajo. Cada elemento
+tiene tipo ('texto' o 'figura'), pagina (p), coordenada Y (y, donde mayor=mas arriba),
+y el texto o archivo de imagen.
+
+Tu tarea: identificar CADA PRODUCTO distinto del catalogo/cotizacion y devolver
+sus datos como JSON.
+
+REGLAS:
+1. Cada producto tipicamente tiene: nombre, codigo SKU, precio FOB en USD,
+   medidas/tamano, material, peso, MOQ, color, packing, una imagen.
+2. Ignora encabezados de pagina, datos del proveedor (telefono, email, banco),
+   terminos generales (validity), logos, footers.
+3. Si un producto tiene variantes (tamanos, colores) con precios distintos,
+   listalas como productos separados.
+4. Si no hay codigo SKU explicito, deja "sku" como cadena vacia.
+5. Para "foto": elige el archivo de figura mas cercano al producto por
+   coordenada Y en la misma pagina. Si no hay figura cercana, "".
+6. Para "fob": numero sin "$" ni "US$". Si no lo encuentras, null.
+7. Para campos opcionales, deja "" si no aparecen en el PDF.
+
+Devuelve EXCLUSIVAMENTE un JSON valido (sin texto adicional ni markdown):
+{{
+  "productos": [
+    {{
+      "sku": "XDB-490M1",
+      "desc": "Plastic pet kennel Medium, no door",
+      "fob": 8.00,
+      "foto": "figures/fileoutpart5.png",
+      "medidas": "L750xW640xH516 mm",
+      "material": "PP",
+      "peso_kg": "5",
+      "color": "Blue roof + white wall",
+      "moq": "300 pcs",
+      "packing": "1pc / brown carton box",
+      "carton": "655x210x520mm",
+      "cbm": "0.07",
+      "pzas_20ft": "380",
+      "pzas_40hq": "950",
+      "lead_time": "25 days"
+    }},
+    ...
+  ]
+}}
+
+Figuras disponibles en el PDF:
+{json.dumps(figuras, indent=2)}
+
+Elementos del PDF (texto y figuras con coordenadas):
+{json.dumps(elementos, ensure_ascii=False, separators=(',', ':'))}
+"""
+
+
+def extraer_con_claude(
+    json_path: str,
+    figures_dir: str,
+    modelo: str = MODELO_DEFAULT,
+    max_tokens_salida: int = 8000,
+    clasificar: bool = True,
+) -> list[dict]:
+    """
+    Llama a Claude para extraer productos de un PDF cuyo JSON ya extrajo Adobe.
+
+    Si clasificar=True, primero clasifica todas las figuras visualmente y solo
+    pasa las de tipo 'producto' al extractor (filtra logos, empaques, diagramas).
+
+    Devuelve [{sku, desc, fob, foto}, ...].
+    """
+    load_dotenv()
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError("Falta ANTHROPIC_API_KEY en .env")
+
+    # Paso 1: clasificar figuras visualmente (filtra logos, empaques, diagramas)
+    clasificaciones: dict[str, str] = {}
+    if clasificar and os.path.isdir(figures_dir):
+        # Cache: si ya existe clasificacion previa, reusar
+        cache_path = os.path.join(os.path.dirname(figures_dir), "_clasificacion_figuras.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, encoding="utf-8") as f:
+                    clasificaciones = json.load(f)
+                from collections import Counter
+                cuenta = Counter(clasificaciones.values())
+                print(f"  Reuso clasificacion cacheada: {dict(cuenta)}")
+            except Exception:
+                clasificaciones = {}
+
+        if not clasificaciones:
+            clasificaciones = clasificar_figuras(figures_dir, modelo=modelo)
+            Path(cache_path).write_text(
+                json.dumps(clasificaciones, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+    elementos = compactar_structured_data(json_path)
+
+    # Filtrar elementos: solo dejar figuras tipo 'producto'
+    if clasificaciones:
+        filtrados: list[dict] = []
+        for e in elementos:
+            if e["tipo"] == "figura":
+                archivo = e["archivo"]
+                # archivo viene como "figures/fileoutpart12.png"
+                solo_nombre = archivo.split("/")[-1]
+                tipo = clasificaciones.get(solo_nombre, "otro")
+                if tipo != "producto":
+                    continue
+                # Marcar para el modelo
+                e["tipo_visual"] = tipo
+            filtrados.append(e)
+        elementos = filtrados
+
+    figuras = sorted([
+        f"figures/{n}"
+        for n, tipo in clasificaciones.items()
+        if tipo == "producto"
+    ]) if clasificaciones else sorted([
+        f"figures/{n}" for n in os.listdir(figures_dir)
+        if n.lower().endswith((".png", ".jpg", ".jpeg"))
+    ]) if os.path.isdir(figures_dir) else []
+
+    prompt = construir_prompt(elementos, figuras)
+    print(f"  Prompt: {len(prompt)} chars, {len(elementos)} elementos, {len(figuras)} figuras producto")
+
+    client = anthropic.Anthropic()
+    resp = client.messages.create(
+        model=modelo,
+        max_tokens=max_tokens_salida,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    texto = resp.content[0].text.strip()
+    print(f"  Tokens: in={resp.usage.input_tokens} out={resp.usage.output_tokens}")
+    # Costo aproximado Haiku 4.5: $1/MTok in, $5/MTok out
+    if "haiku" in modelo.lower():
+        costo = (resp.usage.input_tokens / 1_000_000) * 1.0 + (resp.usage.output_tokens / 1_000_000) * 5.0
+        print(f"  Costo estimado: ${costo:.4f} USD")
+
+    # Claude a veces envuelve en ```json ... ```
+    m = re.search(r"```(?:json)?\s*(.*?)```", texto, re.DOTALL)
+    if m:
+        texto = m.group(1).strip()
+
+    try:
+        parsed = json.loads(texto)
+    except json.JSONDecodeError as e:
+        # Guardar respuesta para debug
+        debug_path = os.path.join(figures_dir, "..", "_claude_response_debug.txt")
+        Path(debug_path).write_text(texto, encoding="utf-8")
+        raise RuntimeError(
+            f"Claude devolvio JSON invalido. Guardado en {debug_path}. Error: {e}"
+        )
+
+    productos = parsed.get("productos", [])
+    print(f"  Productos extraidos por Claude: {len(productos)}")
+
+    # Propagar foto a variantes que comparten prefijo SKU.
+    # Ej: XDB-490S1, XDB-490M1, XDB-490S2 todos comparten "XDB-490" -> mismo grupo.
+    # Si alguna variante del grupo tiene foto, las que no la tienen la heredan.
+    def prefijo_sku(sku: str) -> str:
+        """
+        Devuelve el prefijo numerico raiz para agrupar variantes.
+        Ej: XDB-432, XDB-432S, XDB-432XS, XDB-432-V2 -> "XDB-432"
+            XDB-490S1, XDB-490M1 -> "XDB-490"
+        """
+        if not sku:
+            return ""
+        s = sku.strip().upper()
+        # Tomar letras+dash+digitos iniciales, ignorar sufijos como S/M/L/XS/XL/numeros tras letras
+        m = re.match(r"^([A-Z]+[-]?\d+)", s)
+        if not m:
+            return s
+        prefijo = m.group(1)
+        # Si despues hay letras (S, M, L, S1, M1, etc), las quitamos
+        # Si despues hay -digitos (sub-variante), tambien las quitamos
+        return prefijo
+
+    # Paso 1: propagar dentro de cada grupo (basado en fotos asignadas por Claude)
+    def propagar_dentro_de_grupos() -> int:
+        fotos_por_grupo: dict[str, str] = {}
+        for p in productos:
+            pref = prefijo_sku(p.get("sku") or "")
+            foto = (p.get("foto") or "").strip()
+            if pref and foto and pref not in fotos_por_grupo:
+                fotos_por_grupo[pref] = foto
+        n = 0
+        for p in productos:
+            if not (p.get("foto") or "").strip():
+                pref = prefijo_sku(p.get("sku") or "")
+                if pref in fotos_por_grupo:
+                    p["foto"] = fotos_por_grupo[pref]
+                    p["foto_heredada"] = True
+                    n += 1
+        return n
+
+    propagadas = propagar_dentro_de_grupos()
+
+    # Paso 2: fallback - asignar a un producto sin foto la primera figura
+    # tipo "producto" que nadie haya usado. Despues de cada asignacion,
+    # re-propagar dentro del grupo para que las variantes del mismo SKU
+    # tambien hereden.
+    usadas = {(p.get("foto") or "").strip() for p in productos if p.get("foto")}
+    no_usadas = [
+        f"figures/{n}"
+        for n, tipo in clasificaciones.items()
+        if tipo == "producto" and f"figures/{n}" not in usadas
+    ] if clasificaciones else []
+
+    asignadas_fallback = 0
+    for p in productos:
+        if not (p.get("foto") or "").strip() and no_usadas:
+            p["foto"] = no_usadas.pop(0)
+            p["foto_fallback"] = True
+            asignadas_fallback += 1
+
+    # Paso 3: volver a propagar (ahora con las fotos de fallback como semilla)
+    propagadas += propagar_dentro_de_grupos()
+
+    if propagadas or asignadas_fallback:
+        print(f"  Fotos propagadas por prefijo SKU: {propagadas}")
+        print(f"  Fotos asignadas por fallback: {asignadas_fallback}")
+
+    return productos
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        sys.exit("Uso: python extraer_con_claude.py <carpeta_adobe_extract>")
+    carpeta = os.path.abspath(sys.argv[1])
+    json_path = os.path.join(carpeta, "structuredData.json")
+    figures_dir = os.path.join(carpeta, "figures")
+    if not os.path.exists(json_path):
+        sys.exit(f"No existe: {json_path}")
+
+    productos = extraer_con_claude(json_path, figures_dir)
+    print()
+    print(f"Extraidos {len(productos)} productos:")
+    for i, p in enumerate(productos[:20], 1):
+        sku = p.get("sku") or ""
+        desc = (p.get("desc") or "")[:60]
+        fob = p.get("fob")
+        foto = p.get("foto") or ""
+        print(f"  {i:3}. sku={sku:15} fob={fob!s:>7}  foto={foto:30} desc={desc!r}")
+    if len(productos) > 20:
+        print(f"  ... ({len(productos) - 20} mas)")
+
+    salida = os.path.join(carpeta, "productos_claude.json")
+    Path(salida).write_text(json.dumps(productos, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"\nGuardado en: {salida}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,92 @@
+================================================================
+  MASCOTAS-9MAYO  —  Cómo usar esta carpeta
+================================================================
+
+Generado por Claude el 9 de mayo de 2026.
+
+CONTENIDO
+----------
+1. INDICE.xlsx
+     Excel con los 112 hilos de fortuna@lloydselectronica.com desde
+     el 1 de abril de 2026. Cada fila tiene:
+        - Fecha
+        - Asunto del correo
+        - Categoría(s) inferidas (alimentadores, rejas, pájaros,
+          viaje, correas, higiene, camas, juguetes, alimentación,
+          + categorías nuevas como bolsas, casa-jaula, fuente-agua,
+          ropa-zapatos, silicona, pasto/césped)
+        - Probable adjunto (Sí / ?)
+        - Filename hint (cuando el asunto incluye .xlsx/.pdf)
+        - Proveedor (extraído de "De:" en correo reenviado)
+        - # mensajes en hilo
+        - Snippet (primeras líneas de cada mensaje)
+        - Gmail Link → click directo al hilo en tu Gmail
+        - Thread ID
+
+     Hoja "Resumen" con conteo por categoría.
+
+2. descargar_adjuntos.py
+     Script Python que conecta a tu Gmail con OAuth de lectura y
+     baja todos los PDF/Excel/Word a esta carpeta. Renombra cada
+     archivo con: AAAA-MM-DD__asunto-corto__nombre-original.ext
+
+3. descarga_log.csv  (se crea cuando corres el script)
+     Bitácora de qué se descargó y qué falló.
+
+POR QUÉ NO ESTÁN YA LOS ARCHIVOS DESCARGADOS
+---------------------------------------------
+Tu Workspace de Lloyd's bloqueó la app Composio cuando intenté
+conectarme con OAuth. Por eso te dejé este script que usa una
+credencial OAuth que TÚ creas en Google Cloud Console (o que
+puede crearte IT). Tarda 5 minutos la primera vez y después
+ya nunca más vuelves a tocar Cloud Console.
+
+CÓMO CORRER EL SCRIPT (paso a paso)
+------------------------------------
+1) Instala Python si no lo tienes (3.10+):
+      https://www.python.org/downloads/
+
+2) Abre PowerShell o CMD y corre:
+
+      pip install --upgrade google-api-python-client google-auth-httplib2 google-auth-oauthlib openpyxl
+
+3) Crea credenciales OAuth (UNA sola vez):
+      a) Entra a https://console.cloud.google.com/
+      b) Crea o elige un proyecto
+      c) APIs y Servicios → Biblioteca → "Gmail API" → ACTIVAR
+      d) Pantalla de consentimiento → Externo → llena lo mínimo
+         (App name = "Lloyds Mascotas Descarga", soporte = tu email)
+         En "Audiencia" agrégate como Test user con
+         salomon@lloydselectronica.com
+      e) Credenciales → Crear credenciales →
+         "ID de cliente OAuth" → Aplicación de escritorio
+      f) Descarga el JSON, renómbralo a "credentials.json" y
+         guárdalo aquí mismo (Documents\Mascotas-9Mayo)
+
+4) Corre el script:
+      cd "%USERPROFILE%\Documents\Mascotas-9Mayo"
+      python descargar_adjuntos.py
+
+   Te abre el navegador la primera vez para autorizar acceso de
+   lectura a tu Gmail. Marca tu cuenta salomon@lloydselectronica.com.
+
+5) Listo. Verás algo como:
+      Buscando hilos: from:fortuna@lloydselectronica.com after:2026/04/01 has:attachment
+        → 112 hilos encontrados
+        Progreso: 25/112 hilos | descargados:38 skipped:0 errores:0
+        ...
+      Listo. Descargados:147  Skipped:0  Errores:0
+
+   Si lo corres más veces, hace SKIP de lo ya descargado (no duplica).
+
+PERMISOS QUE PIDE
+------------------
+Solo "gmail.readonly" — leer correos y descargar adjuntos.
+Nunca enviar, nunca borrar.
+
+DUDAS
+------
+Si tu Workspace requiere aprobación de IT para apps OAuth de tipo
+"Aplicación de escritorio", pídele al admin que apruebe la app
+una vez (no para Composio sino para tu propia app). Es un proceso
+de 5 minutos del lado del admin.
