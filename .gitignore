@@ -3,6 +3,8 @@ data/*.db
 data/fotos/
 _adobe_extract_*/
 _intermedio_*.xlsx
+# Pero sí versionar fixtures de tests
+!tests/fixtures/_intermedio_*.xlsx
 formato-hd-*.xlsx
 
 # --- Cotizaciones origen (PDFs/xlsx descargados) ---
