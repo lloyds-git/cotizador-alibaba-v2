@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<div x-data="{ tc: 20.0, factor: 1.4, margen: 0.40 }">
+  <div class="mb-4 flex gap-4 items-center bg-white p-4 rounded shadow text-sm">
+    <label>Tipo cambio MXN:
+      <input type="number" step="0.1" x-model.number="tc" class="border px-2 py-1 w-20 ml-1">
+    </label>
+    <label>Factor importacion:
+      <input type="number" step="0.05" x-model.number="factor" class="border px-2 py-1 w-20 ml-1">
+    </label>
+    <label>Margen objetivo:
+      <input type="number" step="0.05" x-model.number="margen" class="border px-2 py-1 w-20 ml-1">
+    </label>
+    <input type="text" placeholder="Buscar..." class="border px-3 py-1 rounded flex-1"
+           hx-get="/api/productos" hx-trigger="keyup changed delay:300ms"
+           hx-target="#tbody" name="q">
+    <a href="/exportar" class="bg-green-600 text-white px-4 py-1 rounded">Exportar marcados</a>
+  </div>
+
+  <table class="bg-white w-full text-sm shadow rounded overflow-hidden">
+    <thead class="bg-gray-100 text-left">
+      <tr>
+        <th class="p-2">Foto</th>
+        <th class="p-2">SKU</th>
+        <th class="p-2">Descripcion</th>
+        <th class="p-2">FOB USD</th>
+        <th class="p-2">Landed MXN</th>
+        <th class="p-2">Retail MXN</th>
+        <th class="p-2">Margen %</th>
+        <th class="p-2">Cotizar</th>
+      </tr>
+    </thead>
+    <tbody id="tbody">
+      {% for p in productos %}
+        {% include "_fila.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

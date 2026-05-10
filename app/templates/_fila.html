@@ -1,0 +1,17 @@
+<tr class="border-t hover:bg-gray-50" x-data="{ marc: {{ 'true' if p.marcado_cotizar else 'false' }} }">
+  <td class="p-2">
+    {% if p.fotos %}
+      <img src="/{{ p.fotos[0].ruta_relativa }}" class="w-16 h-16 object-contain">
+    {% endif %}
+  </td>
+  <td class="p-2 font-mono">{{ p.sku or '' }}</td>
+  <td class="p-2 max-w-md">{{ p.descripcion }}</td>
+  <td class="p-2">{{ "%.2f"|format(p.fob_usd) if p.fob_usd else '' }}</td>
+  <td class="p-2" x-text="(({{ p.fob_usd or 0 }}) * tc * factor).toFixed(2)"></td>
+  <td class="p-2" x-text="((({{ p.fob_usd or 0 }}) * tc * factor / (1 - margen)) * 1.16).toFixed(0)"></td>
+  <td class="p-2" x-text="(margen * 100).toFixed(0) + '%'"></td>
+  <td class="p-2 text-center">
+    <input type="checkbox" x-model="marc"
+           @change="fetch('/api/productos/{{ p.id }}/marcar', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({marcado: marc})})">
+  </td>
+</tr>
