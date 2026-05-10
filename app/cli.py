@@ -6,6 +6,7 @@ Uso:
     python -m app.cli init                  # crear BD vacia
     python -m app.cli ingestar              # todos los _intermedio_*.xlsx
     python -m app.cli ingestar archivo.xlsx # uno especifico
+    python -m app.cli pdf archivo.pdf       # procesa PDF e ingesta
     python -m app.cli stats                 # contar productos/proveedores
 """
 
@@ -66,6 +67,35 @@ def cmd_ingestar(patron: str | None = None):
     s.close()
 
 
+def cmd_pdf(pdf_path: str):
+    """Procesa un PDF nuevo y lo ingesta a la BD."""
+    import subprocess
+
+    script = PROYECTO_ROOT / "pdf_a_formato_hd.py"
+    if not script.exists():
+        print(f"No existe el script: {script}")
+        return
+
+    result = subprocess.run(
+        [sys.executable, str(script), pdf_path],
+        cwd=str(PROYECTO_ROOT),
+    )
+    if result.returncode != 0:
+        print("Fallo pdf_a_formato_hd")
+        return
+
+    intermedios = sorted(
+        PROYECTO_ROOT.glob("_intermedio_*.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not intermedios:
+        print("No se genero _intermedio_*.xlsx")
+        return
+
+    cmd_ingestar(intermedios[0].name)
+
+
 def cmd_stats():
     SessionFactory = get_session_factory()
     s = SessionFactory()
@@ -90,6 +120,11 @@ def main():
         cmd_ingestar(patron)
     elif cmd == "stats":
         cmd_stats()
+    elif cmd == "pdf":
+        if len(sys.argv) < 3:
+            print("Uso: python -m app.cli pdf <archivo.pdf>")
+            return
+        cmd_pdf(sys.argv[2])
     else:
         print(f"Comando desconocido: {cmd}")
         print(__doc__)
