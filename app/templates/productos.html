@@ -246,32 +246,56 @@
         <!-- Resumen margen Lloyds (siempre visible) -->
         <template x-if="parseFloat(detalle.pasos[8].valor) > 0">
           <div class="mb-3 rounded-lg p-3 border-2"
-               :class="margenEfectivo() >= parseFloat(detalle.margen_nuestro)/100
+               :class="margenReal() >= parseFloat(detalle.margen_nuestro)/100
                        ? 'bg-green-50 border-green-300'
                        : 'bg-red-50 border-red-300'">
             <div class="flex justify-between items-baseline">
               <span class="text-xs uppercase font-semibold text-gray-600">
-                Margen Lloyds efectivo
+                Margen Lloyds real (utilidad / venta)
               </span>
               <span class="font-mono text-2xl font-bold"
-                    :class="margenEfectivo() >= parseFloat(detalle.margen_nuestro)/100
+                    :class="margenReal() >= parseFloat(detalle.margen_nuestro)/100
                             ? 'text-green-700' : 'text-red-700'"
-                    x-text="(margenEfectivo() * 100).toFixed(1) + '%'"></span>
+                    x-text="(margenReal() * 100).toFixed(1) + '%'"></span>
             </div>
-            <div class="flex justify-between text-xs text-gray-600 mt-1">
-              <span>
-                Objetivo: <span x-text="parseFloat(detalle.margen_nuestro).toFixed(0)"></span>%
-              </span>
-              <span>
-                Retail base:
-                $<span x-text="formatearValor((retailEditado || parseFloat(detalle.pasos[12].valor)).toFixed(2))"></span>
-                <span class="text-gray-400 text-[10px]" x-show="retailEditado">(editado)</span>
-                <span class="text-gray-400 text-[10px]" x-show="!retailEditado">(paso 13)</span>
-              </span>
+            <div class="text-[10px] text-gray-500 mt-1">
+              Formula: (venta - landing - venta x desc%) / venta. Objetivo:
+              <span class="font-semibold" x-text="parseFloat(detalle.margen_nuestro).toFixed(0) + '%'"></span>
             </div>
-            <template x-if="margenEfectivo() < parseFloat(detalle.margen_nuestro)/100">
-              <div class="text-[11px] text-red-700 mt-1">
-                ⚠ Por debajo del objetivo. Ajusta retail al alza o revisa FOB/arancel.
+
+            <!-- Desglose tipo factura -->
+            <table class="w-full text-xs mt-2 font-mono">
+              <tbody>
+                <tr>
+                  <td class="text-gray-600">Landing cost (paso 9):</td>
+                  <td class="text-right" x-text="'$ ' + parseFloat(detalle.pasos[8].valor).toFixed(2)"></td>
+                </tr>
+                <tr>
+                  <td class="text-gray-600">Venta a Lloyds (paso 11):</td>
+                  <td class="text-right" x-text="'$ ' + parseFloat(detalle.pasos[10].valor).toFixed(2)"></td>
+                </tr>
+                <tr class="text-gray-500">
+                  <td class="pl-3 text-[10px]">+ gastos y descuentos (<span x-text="detalle.total_desc_pct.toFixed(0)"></span>%):</td>
+                  <td class="text-right text-[10px]" x-text="'$ ' + (parseFloat(detalle.pasos[10].valor) * detalle.total_desc_pct / 100).toFixed(2)"></td>
+                </tr>
+                <tr class="border-t">
+                  <td class="text-gray-600">Costo total:</td>
+                  <td class="text-right font-semibold"
+                      x-text="'$ ' + (parseFloat(detalle.pasos[8].valor) + parseFloat(detalle.pasos[10].valor) * detalle.total_desc_pct / 100).toFixed(2)"></td>
+                </tr>
+                <tr>
+                  <td class="text-gray-600">Utilidad:</td>
+                  <td class="text-right font-bold"
+                      :class="utilidadAbs() >= 0 ? 'text-green-700' : 'text-red-700'"
+                      x-text="'$ ' + utilidadAbs().toFixed(2)"></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <template x-if="margenReal() < parseFloat(detalle.margen_nuestro)/100">
+              <div class="text-[11px] text-red-700 mt-2">
+                ⚠ Margen real por debajo del objetivo. Sube el multiplicador
+                (campo 'Margen Lloyds' arriba) o renegocia FOB/arancel.
               </div>
             </template>
           </div>
@@ -502,27 +526,52 @@ function productosApp() {
       this.detalle = nuevo;
     },
 
+    // Margen real estilo Salo: utilidad / venta, donde
+    //   venta = paso 11 (lo que cobra Lloyds al retailer)
+    //   costo_total = landing + venta * total_desc%
+    //   utilidad = venta - costo_total
+    // Esta es la forma 'aditiva' contable de calcular margen sobre venta.
+    margenReal() {
+      if (!this.detalle) return 0;
+      const landing = parseFloat(this.detalle.pasos[8].valor);
+      const venta = parseFloat(this.detalle.pasos[10].valor);
+      if (venta <= 0) return 0;
+      const td = (this.detalle.total_desc_pct || 34) / 100;
+      const costo_total = landing + venta * td;
+      const utilidad = venta - costo_total;
+      return utilidad / venta;
+    },
+
+    utilidadAbs() {
+      if (!this.detalle) return 0;
+      const landing = parseFloat(this.detalle.pasos[8].valor);
+      const venta = parseFloat(this.detalle.pasos[10].valor);
+      const td = (this.detalle.total_desc_pct || 34) / 100;
+      const costo_total = landing + venta * td;
+      return venta - costo_total;
+    },
+
     margenEfectivo(retailOverride = null) {
       if (!this.detalle) return 0;
-      // Si no se pasa retail, usa el actual (editado o paso 13)
+      // Si no se pasa retail, usa el actual (editado o paso 13).
       const retail = retailOverride !== null
         ? retailOverride
         : (this.retailEditado || parseFloat(this.detalle.pasos[12].valor));
       if (!retail || retail <= 0) return 0;
-      // Cadena directa: paso9 -> /(1-mn) -> /(1-totalDesc) = paso11
-      //                paso11 -> /(1-mc) = paso12
-      //                paso12 -> *(1+iva) = paso13
-      // Margenes vienen del backend en escala 0-100 (15 = 15%), no 0-1.
-      const landed = parseFloat(this.detalle.pasos[8].valor);       // paso 9
+      // Cadena directa (formula Salo aditiva):
+      //   paso11 = paso9 / (1 - mn - td)
+      //   paso12 = paso11 / (1 - mc)
+      //   paso13 = paso12 * (1 + iva)
+      // Inverso: dado retail = paso13, despejar mn real.
+      const landed = parseFloat(this.detalle.pasos[8].valor);
       const mc = parseFloat(this.detalle.margen_cliente) / 100;
       const iva = (this.detalle.iva_pct || 16) / 100;
-      const td = (this.detalle.total_desc_pct || 52) / 100;
+      const td = (this.detalle.total_desc_pct || 34) / 100;
       const paso12 = retail / (1 + iva);
       const paso11 = paso12 * (1 - mc);
-      // paso11 = paso9 / ((1-mn) * (1-td))   =>   (1-mn) = paso9 / (paso11 * (1-td))
       if (paso11 <= 0 || landed <= 0) return -999;
-      const oneMinusMn = landed / (paso11 * (1 - td));
-      return 1 - oneMinusMn;
+      // landing = paso11 * (1 - mn - td)  =>  mn = 1 - td - landing/paso11
+      return 1 - td - landed / paso11;
     },
 
     refrescarDetalle() {

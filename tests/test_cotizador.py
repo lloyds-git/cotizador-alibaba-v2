@@ -114,6 +114,53 @@ def test_endpoint_cotizar_devuelve_14_pasos(cliente, producto_completo):
         assert campo in data
 
 
+def test_margen_real_coincide_con_configurado():
+    """Formula corregida (Salo 2026-05-11): el margen Lloyds configurado
+    debe ser margen real (utilidad/venta), no margen sobre costo.
+
+    Con landing=$100, mn=25%, td=34%, mc=40%:
+      venta esperada = 100 / (1 - 0.25 - 0.34) = 100 / 0.41 = $243.90
+      gastos = 243.90 * 0.34 = $82.93
+      costo_total = 100 + 82.93 = $182.93
+      utilidad = 243.90 - 182.93 = $60.97
+      margen_real = 60.97 / 243.90 = 25.00%
+    """
+    from app.cotizador.engine import compute_for_row
+
+    row = {
+        "unit_price": 1.0,
+        "piezas_contenedor": 1,
+    }
+    settings = {
+        "tc_usd_mxn": 100,        # landing = 100 directo
+        "flete_maritimo_usd": 0,
+        "flete_local_mxn": 0,
+        "dta_pct": 0,
+        "gastos_aduanales_pct": 0,
+        "descuentos_pct": 10,
+        "descuentos_na_pct": 0,
+        "gasto_fijo_pct": 24,
+    }
+    r = compute_for_row(
+        row,
+        settings=settings,
+        override_tasa_pct=0,
+        margen_nuestro_pct=25,
+        margen_cliente_pct=40,
+    )
+    landing = float(r.paso9)
+    venta = float(r.paso11)
+    td = 0.34
+    costo_total = landing + venta * td
+    utilidad = venta - costo_total
+    margen_real = utilidad / venta
+
+    assert abs(margen_real - 0.25) < 0.001, (
+        f"margen real {margen_real:.4f} no es 25%. "
+        f"landing={landing:.2f} venta={venta:.2f} td={td}"
+    )
+
+
 def test_endpoint_cotizar_override_tc(cliente, producto_completo):
     """Cambiar TC mueve el paso 7 (a MXN)."""
     r1 = cliente.get(

@@ -333,10 +333,13 @@ def compute_backward(
 
         mn = mn_pct / HUNDRED
         total_desc = (cp["descuentos_pct"] + cp["descuentos_na_pct"] + cp["gasto_fijo_pct"]) / HUNDRED
-        if mn >= ONE or total_desc >= ONE:
-            warnings.append(f"divisor inválido: mn={mn_pct}%, total_desc={total_desc * HUNDRED}%")
+        if mn + total_desc >= ONE:
+            warnings.append(f"divisor inválido: mn={mn_pct}% + total_desc={total_desc * HUNDRED}% >= 100%")
             return _empty_result(country_code, tasa, fraccion, tc, mn_pct, mc_pct, warnings)
-        paso9 = (paso11 * (ONE - mn) * (ONE - total_desc)).quantize(FOUR_PLACES, rounding=ROUND_HALF_UP)
+        # Forma corregida (Salo 2026-05-11): margen 'mn' es sobre venta, no
+        # sobre costo. Inversa de paso11 = landing / (1 - mn - td):
+        #   landing = paso11 * (1 - mn - td)
+        paso9 = (paso11 * (ONE - mn - total_desc)).quantize(FOUR_PLACES, rounding=ROUND_HALF_UP)
         paso10 = paso9 + (paso11 * total_desc)
 
         # paso14: corre el redondeo psicológico forward sobre paso13 inferido
@@ -433,23 +436,39 @@ def _calc_from_paso9(
     mn_pct: Decimal,
     mc_pct: Decimal,
 ) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal]:
+    """Calcula pasos 10-14 desde paso9 (landed cost unitario MXN).
+
+    Formula corregida (Salo 2026-05-11): el margen Lloyds 'mn' es margen
+    real sobre venta (utilidad/venta), no margen sobre costo.
+
+    Cadena:
+      paso11 = landing / (1 - mn - total_desc)
+        => venta tal que (venta - landing - venta*td) / venta = mn
+      paso10 = landing + paso11 * total_desc   (costo total real)
+      paso12 = paso11 / (1 - mc)               (publico sin IVA)
+      paso13 = paso12 * (1 + iva)              (publico con IVA)
+
+    Si mn + total_desc >= 1, el divisor seria <=0 (margen imposible).
+    """
     mn = mn_pct / HUNDRED
     desc = cp["descuentos_pct"] / HUNDRED
     desc_na = cp["descuentos_na_pct"] / HUNDRED
     gf = cp["gasto_fijo_pct"] / HUNDRED
     total_desc = desc + desc_na + gf
 
-    margin_divisor = ONE - mn
-    discounts_divisor = ONE - total_desc
-    if margin_divisor <= ZERO or discounts_divisor <= ZERO:
+    venta_divisor = ONE - mn - total_desc
+    if venta_divisor <= ZERO:
         raise ValueError(
-            f"Divisor inválido: margen_nuestro={mn_pct}%, total_desc={total_desc * HUNDRED}%"
+            f"Divisor invalido: margen_nuestro={mn_pct}% + total_desc={total_desc * HUNDRED}% "
+            f">= 100%. No se puede alcanzar ese margen con esos gastos."
         )
 
-    paso11 = (paso9 / margin_divisor) / discounts_divisor
+    paso11 = paso9 / venta_divisor
     paso10 = paso9 + (paso11 * total_desc)
 
     mc = mc_pct / HUNDRED
+    if (ONE - mc) <= ZERO:
+        raise ValueError(f"Margen cliente >= 100%: {mc_pct}%")
     paso12 = paso11 / (ONE - mc)
 
     paso13 = (paso12 * (ONE + cp["iva_pct"] / HUNDRED)).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
