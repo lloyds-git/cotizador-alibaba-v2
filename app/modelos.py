@@ -87,6 +87,53 @@ class CostoAdicional(Base):
     producto = relationship("Producto", backref="costos_adicionales")
 
 
+class CotizacionSnapshot(Base):
+    """Snapshot historico de una cotizacion guardada.
+
+    Permite trazabilidad: que retail/margen/settings usamos para cada
+    producto en cada exportacion o ajuste manual. Cada export crea un
+    snapshot automaticamente; tambien se puede guardar manual desde el
+    panel ('Guardar cotizacion').
+
+    Inmutable por convencion: las correcciones se hacen creando un nuevo
+    snapshot, no editando el viejo.
+    """
+    __tablename__ = "cotizacion_snapshots"
+    id = Column(Integer, primary_key=True)
+    producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
+    creado_en = Column(DateTime, default=datetime.utcnow, nullable=False)
+    origen = Column(String(50))  # 'manual', 'export', 'export-categoria'
+
+    # FOB efectivo usado (fob_usd + suma costos adicionales al momento del snapshot)
+    fob_usd_efectivo = Column(Float)
+    costos_adicionales_usd = Column(Float, default=0.0)
+
+    # Settings de cotizacion
+    tc = Column(Float)
+    flete_maritimo_usd = Column(Float)
+    flete_local_mxn = Column(Float)
+    margen_nuestro_pct = Column(Float)
+    margen_cliente_pct = Column(Float)
+    descuentos_pct = Column(Float)
+    descuentos_na_pct = Column(Float)
+    gasto_fijo_pct = Column(Float)
+    gastos_aduanales_pct = Column(Float)
+
+    # Resultado clave
+    fraccion_arancelaria = Column(String(20))
+    tasa_arancelaria_pct = Column(Float)
+    landed_unit_mxn = Column(Float)        # paso 9
+    venta_lloyds_mxn = Column(Float)        # paso 11 (motor) o derivada de retail
+    retail_final_mxn = Column(Float)        # paso 13 o retail editado
+    margen_real_pct = Column(Float)         # utilidad/venta computado
+
+    # Contexto opcional
+    archivo_exportado = Column(String(300)) # nombre del HD si se origino por export
+    notas = Column(Text)
+
+    producto = relationship("Producto", backref="snapshots")
+
+
 class ArancelOverride(Base):
     """Overrides de fraccion arancelaria y tasa por categoria y material.
 

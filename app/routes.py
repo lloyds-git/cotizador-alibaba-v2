@@ -10,7 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.modelos import Producto, ArancelOverride, CostoAdicional
+from app.modelos import Producto, ArancelOverride, CostoAdicional, CotizacionSnapshot
 
 router = APIRouter()
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -259,6 +259,7 @@ def cotizar_14_pasos(
     descuentos_pct: float | None = Query(None, description="Descuentos comerciales % (0-100)"),
     descuentos_na_pct: float | None = Query(None, description="Descuentos no aplicables % (0-100)"),
     gasto_fijo_pct: float | None = Query(None, description="Gastos fijos % (0-100)"),
+    gastos_aduanales_pct: float | None = Query(None, description="Gastos aduanales % (0-100). 0 desactiva el paso 6."),
     piezas: int | None = Query(None, description="Piezas/40HQ override"),
 ):
     """Devuelve los 14 pasos del motor de cotizacion para un producto."""
@@ -295,6 +296,8 @@ def cotizar_14_pasos(
         settings["descuentos_na_pct"] = descuentos_na_pct
     if gasto_fijo_pct is not None:
         settings["gasto_fijo_pct"] = gasto_fijo_pct
+    if gastos_aduanales_pct is not None:
+        settings["gastos_aduanales_pct"] = gastos_aduanales_pct
 
     res = compute_for_row(
         row,
@@ -486,6 +489,33 @@ def _correr_llenar_formato_hd(
     return salida
 
 
+def _snapshot_productos_exportados(
+    db: Session,
+    productos_q,
+    archivo_nombre: str,
+    origen: str,
+) -> int:
+    """Crea un CotizacionSnapshot por cada producto en la query exportada.
+
+    Usa los defaults del motor + costos adicionales del producto. No
+    captura el retail editado de la UI (ese requiere POST manual desde
+    el panel).
+    """
+    n = 0
+    for p in productos_q.all():
+        try:
+            _crear_snapshot(
+                db, p.id,
+                origen=origen,
+                archivo_exportado=archivo_nombre,
+            )
+            n += 1
+        except Exception:
+            # Un fallo individual no debe abortar el export
+            db.rollback()
+    return n
+
+
 @router.get("/exportar")
 def exportar(db: SesionDep):
     """Genera HD desde la seleccion actual (compatibilidad)."""
@@ -493,6 +523,13 @@ def exportar(db: SesionDep):
     xlsx_int = proyecto / "_intermedio_seleccion.xlsx"
     salida = proyecto / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
     archivo = _correr_llenar_formato_hd(db, xlsx_int, salida)
+    # Snapshot por cada producto marcado
+    _snapshot_productos_exportados(
+        db,
+        db.query(Producto).filter(Producto.marcado_cotizar.is_(True)),
+        archivo.name,
+        origen="export-marcados",
+    )
     return FileResponse(str(archivo), filename=archivo.name)
 
 
@@ -519,6 +556,13 @@ def exportar_categoria(categoria: str, db: SesionDep):
     # Pasamos categoria=None si el cliente uso el sentinela __sin_categoria__
     cat_filter = None if categoria == SIN_CATEGORIA else categoria
     archivo = _correr_llenar_formato_hd(db, xlsx_int, salida, categoria=cat_filter)
+    # Snapshot por cada producto exportado en la categoria
+    _snapshot_productos_exportados(
+        db,
+        _aplicar_filtro_categoria(db.query(Producto), categoria),
+        archivo.name,
+        origen=f"export-cat:{cat_slug}",
+    )
     return FileResponse(str(archivo), filename=archivo.name)
 
 
@@ -600,6 +644,217 @@ def eliminar_arancel(arancel_id: int, db: SesionDep):
     if not o:
         raise HTTPException(404, "Arancel no existe")
     db.delete(o)
+    db.commit()
+    return {"ok": True}
+
+
+# ============================================================
+# Cotizacion snapshots (historial)
+# ============================================================
+
+
+class SnapshotBody(BaseModel):
+    origen: str = "manual"
+    # Settings tal como estan en el UI (vienen en escala 0-100 para %)
+    tc: float | None = None
+    flete_maritimo_usd: float | None = None
+    flete_local_mxn: float | None = None
+    margen_nuestro_pct: float | None = None
+    margen_cliente_pct: float | None = None
+    descuentos_pct: float | None = None
+    descuentos_na_pct: float | None = None
+    gasto_fijo_pct: float | None = None
+    gastos_aduanales_pct: float | None = None
+    # Retail final (opcional: si se omite usa paso 13 del motor)
+    retail_final_mxn: float | None = None
+    archivo_exportado: str | None = None
+    notas: str | None = None
+
+
+def _snapshot_to_dict(s: CotizacionSnapshot) -> dict:
+    return {
+        "id": s.id,
+        "producto_id": s.producto_id,
+        "creado_en": s.creado_en.isoformat() if s.creado_en else None,
+        "origen": s.origen,
+        "fob_usd_efectivo": s.fob_usd_efectivo,
+        "costos_adicionales_usd": s.costos_adicionales_usd,
+        "tc": s.tc,
+        "flete_maritimo_usd": s.flete_maritimo_usd,
+        "flete_local_mxn": s.flete_local_mxn,
+        "margen_nuestro_pct": s.margen_nuestro_pct,
+        "margen_cliente_pct": s.margen_cliente_pct,
+        "descuentos_pct": s.descuentos_pct,
+        "descuentos_na_pct": s.descuentos_na_pct,
+        "gasto_fijo_pct": s.gasto_fijo_pct,
+        "gastos_aduanales_pct": s.gastos_aduanales_pct,
+        "fraccion_arancelaria": s.fraccion_arancelaria,
+        "tasa_arancelaria_pct": s.tasa_arancelaria_pct,
+        "landed_unit_mxn": s.landed_unit_mxn,
+        "venta_lloyds_mxn": s.venta_lloyds_mxn,
+        "retail_final_mxn": s.retail_final_mxn,
+        "margen_real_pct": s.margen_real_pct,
+        "archivo_exportado": s.archivo_exportado,
+        "notas": s.notas,
+    }
+
+
+def _crear_snapshot(
+    db: Session,
+    producto_id: int,
+    *,
+    origen: str,
+    tc: float | None = None,
+    flete_maritimo_usd: float | None = None,
+    flete_local_mxn: float | None = None,
+    margen_nuestro_pct: float | None = None,
+    margen_cliente_pct: float | None = None,
+    descuentos_pct: float | None = None,
+    descuentos_na_pct: float | None = None,
+    gasto_fijo_pct: float | None = None,
+    gastos_aduanales_pct: float | None = None,
+    retail_final_mxn: float | None = None,
+    archivo_exportado: str | None = None,
+    notas: str | None = None,
+) -> CotizacionSnapshot:
+    """Construye y persiste un snapshot corriendo el motor con los settings dados.
+
+    Si retail_final_mxn viene, lo usa para derivar margen_real inverso.
+    Si no, usa paso 13 del motor.
+    """
+    from app.cotizador.engine import compute_for_row
+    from app.cotizador.adapter import producto_a_row
+    from app.cotizador.lookup import resolver_arancel
+    from app.cotizador.defaults import country_params
+
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+
+    # Sumar costos adicionales
+    costos = db.query(CostoAdicional).filter_by(producto_id=producto_id).all()
+    suma_costos = sum(c.monto_usd for c in costos)
+    row = producto_a_row(p)
+    fob_original = row["unit_price"] or 0
+    if suma_costos > 0:
+        row["unit_price"] = fob_original + suma_costos
+
+    arancel = resolver_arancel(db, p.categoria, p.subcategoria, p.material)
+
+    settings = {}
+    if flete_local_mxn is not None:
+        settings["flete_local_mxn"] = flete_local_mxn
+    if descuentos_pct is not None:
+        settings["descuentos_pct"] = descuentos_pct
+    if descuentos_na_pct is not None:
+        settings["descuentos_na_pct"] = descuentos_na_pct
+    if gasto_fijo_pct is not None:
+        settings["gasto_fijo_pct"] = gasto_fijo_pct
+    if gastos_aduanales_pct is not None:
+        settings["gastos_aduanales_pct"] = gastos_aduanales_pct
+
+    res = compute_for_row(
+        row,
+        settings=settings,
+        override_tc=tc,
+        override_flete_maritimo_usd=flete_maritimo_usd,
+        margen_nuestro_pct=margen_nuestro_pct,
+        margen_cliente_pct=margen_cliente_pct,
+        override_tasa_pct=arancel.tasa_pct,
+    )
+
+    landed = float(res.paso9)
+    venta_motor = float(res.paso11)
+    retail_motor = float(res.paso13)
+    cp = country_params(res.country_code, settings=settings)
+    iva = float(cp["iva_pct"]) / 100
+    td = (float(cp["descuentos_pct"]) + float(cp["descuentos_na_pct"]) + float(cp["gasto_fijo_pct"])) / 100
+    mc = float(res.margen_cliente_effective) / 100
+
+    # Si vino retail_final, derivar venta inversa para calcular margen real
+    if retail_final_mxn and retail_final_mxn > 0:
+        venta_efectiva = (retail_final_mxn / (1 + iva)) * (1 - mc)
+        retail_persistido = retail_final_mxn
+    else:
+        venta_efectiva = venta_motor
+        retail_persistido = retail_motor
+
+    # margen real = (venta - landing - venta*td) / venta
+    if venta_efectiva > 0:
+        margen_real = 1 - (landed / venta_efectiva) - td
+    else:
+        margen_real = 0
+
+    snap = CotizacionSnapshot(
+        producto_id=producto_id,
+        origen=origen,
+        fob_usd_efectivo=fob_original + suma_costos,
+        costos_adicionales_usd=suma_costos,
+        tc=tc,
+        flete_maritimo_usd=flete_maritimo_usd,
+        flete_local_mxn=settings.get("flete_local_mxn"),
+        margen_nuestro_pct=margen_nuestro_pct,
+        margen_cliente_pct=margen_cliente_pct,
+        descuentos_pct=settings.get("descuentos_pct", float(cp["descuentos_pct"])),
+        descuentos_na_pct=settings.get("descuentos_na_pct", float(cp["descuentos_na_pct"])),
+        gasto_fijo_pct=settings.get("gasto_fijo_pct", float(cp["gasto_fijo_pct"])),
+        gastos_aduanales_pct=settings.get("gastos_aduanales_pct"),
+        fraccion_arancelaria=arancel.fraccion,
+        tasa_arancelaria_pct=float(arancel.tasa_pct),
+        landed_unit_mxn=landed,
+        venta_lloyds_mxn=venta_efectiva,
+        retail_final_mxn=retail_persistido,
+        margen_real_pct=margen_real * 100,
+        archivo_exportado=archivo_exportado,
+        notas=notas,
+    )
+    db.add(snap)
+    db.commit()
+    db.refresh(snap)
+    return snap
+
+
+@router.get("/api/productos/{producto_id}/snapshots")
+def listar_snapshots(producto_id: int, db: SesionDep):
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+    snaps = (
+        db.query(CotizacionSnapshot)
+        .filter_by(producto_id=producto_id)
+        .order_by(CotizacionSnapshot.creado_en.desc())
+        .all()
+    )
+    return {"items": [_snapshot_to_dict(s) for s in snaps]}
+
+
+@router.post("/api/productos/{producto_id}/snapshots")
+def crear_snapshot_manual(producto_id: int, body: SnapshotBody, db: SesionDep):
+    snap = _crear_snapshot(
+        db, producto_id,
+        origen=body.origen or "manual",
+        tc=body.tc,
+        flete_maritimo_usd=body.flete_maritimo_usd,
+        flete_local_mxn=body.flete_local_mxn,
+        margen_nuestro_pct=body.margen_nuestro_pct,
+        margen_cliente_pct=body.margen_cliente_pct,
+        descuentos_pct=body.descuentos_pct,
+        descuentos_na_pct=body.descuentos_na_pct,
+        gasto_fijo_pct=body.gasto_fijo_pct,
+        gastos_aduanales_pct=body.gastos_aduanales_pct,
+        retail_final_mxn=body.retail_final_mxn,
+        archivo_exportado=body.archivo_exportado,
+        notas=body.notas,
+    )
+    return _snapshot_to_dict(snap)
+
+
+@router.delete("/api/productos/{producto_id}/snapshots/{snapshot_id}")
+def borrar_snapshot(producto_id: int, snapshot_id: int, db: SesionDep):
+    s = db.get(CotizacionSnapshot, snapshot_id)
+    if not s or s.producto_id != producto_id:
+        raise HTTPException(404, "Snapshot no existe")
+    db.delete(s)
     db.commit()
     return {"ok": True}
 

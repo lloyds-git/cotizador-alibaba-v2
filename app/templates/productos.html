@@ -39,6 +39,11 @@
       <span class="text-gray-400">
         Total: <span x-text="(descuentosPct + descuentosNaPct + gastoFijoPct).toFixed(0)"></span>%
       </span>
+      <label class="ml-3">Gastos aduanales %:
+        <input type="number" step="0.5" x-model.number="gastosAduanalesPct"
+               class="border px-2 py-1 w-16 ml-1"
+               title="0 desactiva el paso 6 (no se aplica multiplicador)">
+      </label>
     </div>
 
     <div class="flex gap-3 items-center flex-wrap">
@@ -363,6 +368,62 @@
                 (campo 'Margen Lloyds' arriba) o ajusta retail al alza.
               </div>
             </template>
+
+            <!-- Boton guardar snapshot -->
+            <div class="mt-3 pt-2 border-t flex justify-end items-center gap-2">
+              <button type="button" @click="guardarSnapshot()"
+                      class="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-1 rounded"
+                      :title="'Guardar cotizacion (' + (retailEditado ? 'retail editado' : 'retail motor') + ')'">
+                💾 Guardar cotizacion
+              </button>
+              <button type="button" @click="mostrarHistorial = !mostrarHistorial; if (mostrarHistorial) cargarSnapshots()"
+                      class="bg-gray-200 hover:bg-gray-300 text-xs px-3 py-1 rounded">
+                <span x-show="!mostrarHistorial">📋 Ver historial</span>
+                <span x-show="mostrarHistorial">▲ Ocultar historial</span>
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Historial de snapshots -->
+        <template x-if="mostrarHistorial">
+          <div class="mb-3 bg-gray-50 border border-gray-200 p-3 rounded">
+            <div class="text-xs uppercase font-semibold text-gray-600 mb-2">
+              Historial de cotizaciones (<span x-text="snapshots.length"></span>)
+            </div>
+            <template x-if="snapshots.length === 0">
+              <div class="text-xs text-gray-400">Sin snapshots todavia. Guarda uno con el boton de arriba o exporta el HD por categoria.</div>
+            </template>
+            <template x-for="s in snapshots" :key="s.id">
+              <div class="bg-white border rounded p-2 mb-2 text-xs">
+                <div class="flex justify-between items-baseline">
+                  <span class="font-mono text-[11px] text-gray-500"
+                        x-text="new Date(s.creado_en).toLocaleString()"></span>
+                  <span>
+                    <span class="bg-purple-100 text-purple-800 px-2 py-0.5 rounded text-[10px]"
+                          x-text="s.origen"></span>
+                    <button type="button" @click="borrarSnapshot(s)"
+                            class="ml-2 text-red-500 hover:underline text-[10px]">borrar</button>
+                  </span>
+                </div>
+                <div class="grid grid-cols-2 gap-1 mt-1 font-mono">
+                  <div>FOB efectivo: $<span x-text="(s.fob_usd_efectivo || 0).toFixed(2)"></span></div>
+                  <div :title="'Costos adicionales aplicados al momento del snapshot'">
+                    + costos: $<span x-text="(s.costos_adicionales_usd || 0).toFixed(2)"></span>
+                  </div>
+                  <div>Landing: $<span x-text="(s.landed_unit_mxn || 0).toFixed(2)"></span></div>
+                  <div>Venta: $<span x-text="(s.venta_lloyds_mxn || 0).toFixed(2)"></span></div>
+                  <div>Retail: $<span x-text="(s.retail_final_mxn || 0).toFixed(2)"></span></div>
+                  <div class="font-bold"
+                       :class="(s.margen_real_pct || 0) >= (s.margen_nuestro_pct || 25) ? 'text-green-700' : 'text-red-700'">
+                    Margen real: <span x-text="(s.margen_real_pct || 0).toFixed(1)"></span>%
+                  </div>
+                  <div class="text-gray-500 text-[10px] col-span-2"
+                       x-show="s.archivo_exportado"
+                       x-text="'Archivo: ' + s.archivo_exportado"></div>
+                </div>
+              </div>
+            </template>
           </div>
         </template>
 
@@ -454,6 +515,7 @@ function productosApp() {
     descuentosPct: 10,
     descuentosNaPct: 0,
     gastoFijoPct: 24,
+    gastosAduanalesPct: 5,
     q: '',
     categoriaFiltro: '',
     soloMarcados: false,
@@ -465,6 +527,8 @@ function productosApp() {
     retailEditado: null,
     nuevoCostoConcepto: '',
     nuevoCostoMonto: null,
+    snapshots: [],
+    mostrarHistorial: false,
 
     async init() {
       await this.cargarCategorias();
@@ -478,6 +542,7 @@ function productosApp() {
       this.$watch('descuentosPct', () => this.refrescarDetalle());
       this.$watch('descuentosNaPct', () => this.refrescarDetalle());
       this.$watch('gastoFijoPct', () => this.refrescarDetalle());
+      this.$watch('gastosAduanalesPct', () => this.refrescarDetalle());
     },
 
     async cargarCategorias() {
@@ -572,6 +637,7 @@ function productosApp() {
       params.set('descuentos_pct', this.descuentosPct);
       params.set('descuentos_na_pct', this.descuentosNaPct);
       params.set('gasto_fijo_pct', this.gastoFijoPct);
+      params.set('gastos_aduanales_pct', this.gastosAduanalesPct);
       const r = await fetch(`/api/productos/${producto_id}/cotizar?` + params.toString());
       if (!r.ok) {
         alert('Error cargando detalle: ' + r.status);
@@ -583,6 +649,8 @@ function productosApp() {
       if (cambioDeProducto) {
         this.retailEditado = null;
         this.origen = null;
+        this.snapshots = [];
+        this.mostrarHistorial = false;
         // Cargar origen en paralelo, no bloquea
         fetch(`/api/productos/${producto_id}/origen`).then(r => r.json()).then(o => {
           if (this.detalle && this.detalle.producto_id === producto_id) {
@@ -689,6 +757,48 @@ function productosApp() {
         method: 'DELETE',
       });
       await this.refrescarDetalle();
+    },
+
+    async cargarSnapshots() {
+      if (!this.detalle) return;
+      const r = await fetch(`/api/productos/${this.detalle.producto_id}/snapshots`);
+      const j = await r.json();
+      this.snapshots = j.items;
+    },
+
+    async guardarSnapshot() {
+      if (!this.detalle) return;
+      const body = {
+        origen: 'manual',
+        tc: this.tc,
+        flete_maritimo_usd: this.fleteMaritimo,
+        flete_local_mxn: this.fleteLocal,
+        margen_nuestro_pct: this.margenNuestro * 100,
+        margen_cliente_pct: this.margenCliente * 100,
+        descuentos_pct: this.descuentosPct,
+        descuentos_na_pct: this.descuentosNaPct,
+        gasto_fijo_pct: this.gastoFijoPct,
+        gastos_aduanales_pct: this.gastosAduanalesPct,
+        retail_final_mxn: this.retailEditado || null,
+      };
+      const r = await fetch(`/api/productos/${this.detalle.producto_id}/snapshots`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        alert('Error guardando snapshot: ' + r.status);
+        return;
+      }
+      const snap = await r.json();
+      alert(`Cotizacion guardada: margen real ${snap.margen_real_pct.toFixed(1)}% retail $${snap.retail_final_mxn.toFixed(2)}`);
+      if (this.mostrarHistorial) await this.cargarSnapshots();
+    },
+
+    async borrarSnapshot(s) {
+      if (!confirm(`Borrar snapshot del ${new Date(s.creado_en).toLocaleString()}?`)) return;
+      await fetch(`/api/productos/${s.producto_id}/snapshots/${s.id}`, { method: 'DELETE' });
+      await this.cargarSnapshots();
     },
 
     exportarCategoria() {
