@@ -77,9 +77,9 @@
           <th class="p-2">Foto</th>
           <th class="p-2">SKU</th>
           <th class="p-2">Descripcion</th>
+          <th class="p-2">Proveedor</th>
           <th class="p-2">Categoria</th>
           <th class="p-2">FOB USD</th>
-          <th class="p-2 text-right">Medidas</th>
           <th class="p-2 text-right">CBM</th>
           <th class="p-2 text-right">Pzas/40HQ</th>
           <th class="p-2 text-center">Cotizar</th>
@@ -97,6 +97,8 @@
             </td>
             <td class="p-2 font-mono text-xs" x-text="p.sku || ''"></td>
             <td class="p-2 max-w-md text-xs" x-text="p.descripcion"></td>
+            <td class="p-2 text-xs text-gray-600 max-w-[160px] truncate"
+                :title="p.proveedor || ''" x-text="p.proveedor || ''"></td>
             <td class="p-2" @click.stop>
               <select :value="p.categoria || ''"
                       @change="manejarCambioCategoria(p, $event.target)"
@@ -111,7 +113,6 @@
               </select>
             </td>
             <td class="p-2 font-mono" x-text="p.fob_usd ? '$' + p.fob_usd.toFixed(2) : ''"></td>
-            <td class="p-2 text-right text-xs" x-text="p.medidas || ''"></td>
             <td class="p-2 text-right" x-text="p.cbm ? p.cbm.toFixed(3) : ''"></td>
             <td class="p-2 text-right" x-text="p.pzas_40hq || ''"></td>
             <td class="p-2 text-center" @click.stop>
@@ -147,11 +148,35 @@
             <div class="text-xs text-gray-500" x-text="detalle.proveedor || ''"></div>
             <div class="text-xs text-gray-500">
               <span x-text="detalle.categoria || '(sin categoria)'"></span>
-              <span x-show="detalle.fraccion_arancelaria && detalle.fraccion_arancelaria !== '—'">
-                · Fracc <span x-text="detalle.fraccion_arancelaria"></span>
-                · Tasa <span x-text="parseFloat(detalle.tasa_arancelaria_pct).toFixed(0)"></span>%
+              <span>
+                · Fracc <span class="font-mono" x-text="detalle.fraccion_arancelaria || '—'"></span>
+                · Tasa <span x-text="parseFloat(detalle.tasa_arancelaria_pct).toFixed(1)"></span>%
               </span>
+              <span class="text-[10px] ml-1"
+                    :class="{
+                      'text-green-600': detalle.tasa_arancelaria_fuente === 'override-db',
+                      'text-blue-600': detalle.tasa_arancelaria_fuente === 'tariffs-estatico',
+                      'text-orange-600': detalle.tasa_arancelaria_fuente === 'default-metal',
+                      'text-gray-500': detalle.tasa_arancelaria_fuente === 'default-25'
+                    }"
+                    x-text="'(' + (detalle.tasa_arancelaria_fuente || '?') + ')'"></span>
+              <a href="/aranceles" class="ml-1 text-blue-500 hover:underline text-[10px]"
+                 title="Editar overrides de aranceles">[editar]</a>
             </div>
+            <template x-if="origen && origen.existe">
+              <div class="text-xs mt-1">
+                <a :href="origen.ver_url" target="_blank"
+                   class="text-blue-600 hover:text-blue-800 underline">
+                  📄 Ver cotizacion original (<span x-text="origen.tipo"></span>)
+                </a>
+                <span class="text-gray-400 ml-1" x-show="origen.miembros && origen.miembros.length > 1">
+                  · <span x-text="origen.miembros.length"></span> archivos similares
+                </span>
+              </div>
+            </template>
+            <template x-if="origen && !origen.existe">
+              <div class="text-xs mt-1 text-gray-400" x-text="'Cotizacion original: ' + (origen.razon || 'no disponible')"></div>
+            </template>
           </div>
           <button type="button" @click="detalle = null"
                   class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
@@ -202,8 +227,8 @@
             <span>Motor cotizacion (14 pasos)</span>
             <span class="text-gray-400">
               TC <span x-text="parseFloat(detalle.tipo_cambio).toFixed(2)"></span>
-              · Mn <span x-text="(parseFloat(detalle.margen_nuestro)*100).toFixed(0)"></span>%
-              · Mc <span x-text="(parseFloat(detalle.margen_cliente)*100).toFixed(0)"></span>%
+              · Mn <span x-text="parseFloat(detalle.margen_nuestro).toFixed(0)"></span>%
+              · Mc <span x-text="parseFloat(detalle.margen_cliente).toFixed(0)"></span>%
             </span>
           </div>
           <table class="w-full text-xs">
@@ -224,6 +249,50 @@
             Paso 9 = landed cost MXN/pieza · Paso 13 = publico c/IVA · Paso 14 = redondeo psicologico
           </div>
         </div>
+
+        <!-- Ajuste de retail -> margen efectivo -->
+        <div class="mt-3 pt-3 border-t bg-yellow-50 -mx-4 px-4 py-3">
+          <div class="text-xs text-gray-700 uppercase mb-2 font-semibold">
+            Ajustar precio retail (calcula margen real)
+          </div>
+          <div class="flex items-center gap-2 mb-2">
+            <label class="text-xs text-gray-600">Retail c/IVA:</label>
+            <span class="text-xs">$</span>
+            <input type="number" step="1" :value="retailEditado || parseFloat(detalle.pasos[12].valor).toFixed(2)"
+                   @input="retailEditado = parseFloat($event.target.value)"
+                   class="border px-2 py-1 rounded font-mono w-28 text-sm">
+            <button type="button" @click="retailEditado = null"
+                    class="text-xs text-gray-500 hover:text-gray-700">reset</button>
+          </div>
+          <template x-if="retailEditado !== null && retailEditado > 0">
+            <div class="text-xs space-y-1 font-mono">
+              <div class="flex justify-between">
+                <span class="text-gray-600">Retail editado:</span>
+                <span x-text="'$ ' + retailEditado.toFixed(2)"></span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-gray-600">- IVA (16%):</span>
+                <span x-text="'$ ' + (retailEditado / 1.16).toFixed(2)"></span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-gray-600">× (1 - mc <span x-text="parseFloat(detalle.margen_cliente).toFixed(0)"></span>%):</span>
+                <span x-text="'$ ' + (retailEditado / 1.16 * (1 - parseFloat(detalle.margen_cliente))).toFixed(2)"></span>
+              </div>
+              <div class="flex justify-between border-t pt-1">
+                <span class="text-gray-600">Landed unitario (paso 9):</span>
+                <span x-text="'$ ' + parseFloat(detalle.pasos[8].valor).toFixed(2)"></span>
+              </div>
+              <div class="flex justify-between font-bold text-sm pt-1"
+                   :class="margenEfectivo() >= parseFloat(detalle.margen_nuestro) / 100 ? 'text-green-700' : 'text-red-700'">
+                <span>Margen Lloyds efectivo:</span>
+                <span x-text="(margenEfectivo() * 100).toFixed(1) + '%'"></span>
+              </div>
+              <div class="text-[10px] text-gray-500" x-show="margenEfectivo() < parseFloat(detalle.margen_nuestro) / 100">
+                ⚠ Margen real por debajo del objetivo (<span x-text="parseFloat(detalle.margen_nuestro).toFixed(0)"></span>%)
+              </div>
+            </div>
+          </template>
+        </div>
       </div>
     </template>
   </aside>
@@ -243,6 +312,8 @@ function productosApp() {
     categorias: [],
     totalMarcados: null,
     detalle: null,
+    origen: null,
+    retailEditado: null,
 
     async init() {
       await this.cargarCategorias();
@@ -338,15 +409,47 @@ function productosApp() {
     async cargarDetalle(producto_id) {
       const params = new URLSearchParams();
       params.set('tc', this.tc);
-      params.set('margen_nuestro', this.margenNuestro);
-      params.set('margen_cliente', this.margenCliente);
+      // El motor espera margen en escala 0-100 (15 = 15%), no 0-1
+      params.set('margen_nuestro', this.margenNuestro * 100);
+      params.set('margen_cliente', this.margenCliente * 100);
       params.set('flete_maritimo_usd', this.fleteMaritimo);
       const r = await fetch(`/api/productos/${producto_id}/cotizar?` + params.toString());
       if (!r.ok) {
         alert('Error cargando detalle: ' + r.status);
         return;
       }
-      this.detalle = await r.json();
+      const nuevo = await r.json();
+      // Reset retailEditado solo si cambia el producto
+      const cambioDeProducto = !this.detalle || this.detalle.producto_id !== nuevo.producto_id;
+      if (cambioDeProducto) {
+        this.retailEditado = null;
+        this.origen = null;
+        // Cargar origen en paralelo, no bloquea
+        fetch(`/api/productos/${producto_id}/origen`).then(r => r.json()).then(o => {
+          if (this.detalle && this.detalle.producto_id === producto_id) {
+            this.origen = o;
+          }
+        }).catch(() => {});
+      }
+      this.detalle = nuevo;
+    },
+
+    margenEfectivo() {
+      if (!this.detalle || !this.retailEditado || this.retailEditado <= 0) return 0;
+      // Cadena directa: paso9 -> /(1-mn) -> /(1-totalDesc) = paso11
+      //                paso11 -> /(1-mc) = paso12
+      //                paso12 -> *(1+iva) = paso13
+      // Margenes vienen del backend en escala 0-100 (15 = 15%), no 0-1.
+      const landed = parseFloat(this.detalle.pasos[8].valor);       // paso 9
+      const mc = parseFloat(this.detalle.margen_cliente) / 100;
+      const iva = (this.detalle.iva_pct || 16) / 100;
+      const td = (this.detalle.total_desc_pct || 52) / 100;
+      const paso12 = this.retailEditado / (1 + iva);
+      const paso11 = paso12 * (1 - mc);
+      // paso11 = paso9 / ((1-mn) * (1-td))   =>   (1-mn) = paso9 / (paso11 * (1-td))
+      if (paso11 <= 0 || landed <= 0) return -999;
+      const oneMinusMn = landed / (paso11 * (1 - td));
+      return 1 - oneMinusMn;
     },
 
     refrescarDetalle() {

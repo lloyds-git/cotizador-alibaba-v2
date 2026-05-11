@@ -65,3 +65,27 @@ class Foto(Base):
     es_principal = Column(Boolean, default=False)
 
     producto = relationship("Producto", back_populates="fotos")
+
+
+class ArancelOverride(Base):
+    """Overrides de fraccion arancelaria y tasa por categoria y material.
+
+    Reglas de match (mas especifico gana):
+      1. categoria + material_pattern (ambos no nulos): match exacto cat +
+         material que contenga el patron (case-insensitive).
+      2. categoria + material_pattern=NULL: aplica a toda la categoria.
+      3. categoria=NULL + material_pattern: aplica a cualquier categoria
+         con ese material (ej. todo lo que sea de acero).
+      4. ambos NULL: fallback global (no debe haber mas de uno).
+
+    Se consulta en lookup_tariff_db ANTES de la tabla estatica de tariffs.py.
+    """
+    __tablename__ = "aranceles_override"
+    id = Column(Integer, primary_key=True)
+    categoria = Column(String(50))           # nullable: aplica a todas
+    material_pattern = Column(String(100))   # nullable: aplica a cualquier material
+    fraccion = Column(String(20), nullable=False)
+    tasa_pct = Column(Float, nullable=False)
+    nota = Column(Text)
+    creado_en = Column(DateTime, default=datetime.utcnow)
+    actualizado_en = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

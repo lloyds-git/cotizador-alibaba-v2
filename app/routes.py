@@ -10,7 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.modelos import Producto
+from app.modelos import Producto, ArancelOverride
 
 router = APIRouter()
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -156,6 +156,97 @@ def marcar_bulk(body: MarcarBulkBody, db: SesionDep):
     return {"ok": True, "afectados": n}
 
 
+@router.get("/api/productos/{producto_id}/origen")
+def origen_cotizacion(producto_id: int, db: SesionDep):
+    """Devuelve metadatos del archivo origen (PDF/xlsx) que origino al
+    producto, cruzando el archivo_pdf del proveedor (intermedio) contra
+    data/manifest_archivos.json.
+
+    Devuelve {existe: bool, canonico, ruta, tipo, ver_url} para que el
+    frontend decida si embeber, abrir en nueva pestana o solo enlazar.
+    """
+    import json as _json
+
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+
+    intermedio_nombre = (p.proveedor.archivo_pdf or "") if p.proveedor else ""
+    proyecto = Path(__file__).parent.parent
+    manifest_path = proyecto / "data" / "manifest_archivos.json"
+
+    if not manifest_path.exists() or not intermedio_nombre:
+        return {
+            "existe": False,
+            "razon": "No hay manifest o producto sin archivo_pdf",
+            "intermedio": intermedio_nombre,
+        }
+
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    # Buscar entrada cuyo `intermedio` coincida con archivo_pdf (sin extension
+    # o con .xlsx)
+    base_busqueda = intermedio_nombre.lower().replace(".xlsx", "")
+    encontrada = None
+    for e in manifest.get("entradas", []):
+        inter = (e.get("intermedio") or "").lower().replace(".xlsx", "")
+        if inter and (inter == base_busqueda or base_busqueda in inter or inter in base_busqueda):
+            encontrada = e
+            break
+
+    if encontrada is None:
+        return {
+            "existe": False,
+            "razon": "No se encontro origen en manifest",
+            "intermedio": intermedio_nombre,
+        }
+
+    canonico = encontrada["canonico"]
+    ruta_archivo = proyecto / canonico
+    if not ruta_archivo.exists():
+        return {
+            "existe": False,
+            "razon": "Manifest apunta a archivo que ya no existe",
+            "canonico": canonico,
+        }
+
+    return {
+        "existe": True,
+        "canonico": canonico,
+        "tipo": encontrada["tipo"],
+        "ver_url": f"/cotizacion-original/{producto_id}",
+        "miembros": encontrada.get("miembros", [canonico]),
+    }
+
+
+@router.get("/cotizacion-original/{producto_id}")
+def ver_cotizacion_original(producto_id: int, db: SesionDep):
+    """Sirve el archivo origen del producto (PDF inline, xlsx descarga)."""
+    import json as _json
+
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+
+    intermedio_nombre = (p.proveedor.archivo_pdf or "") if p.proveedor else ""
+    proyecto = Path(__file__).parent.parent
+    manifest_path = proyecto / "data" / "manifest_archivos.json"
+    if not manifest_path.exists() or not intermedio_nombre:
+        raise HTTPException(404, "No hay manifest o sin intermedio asociado")
+
+    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    base = intermedio_nombre.lower().replace(".xlsx", "")
+    for e in manifest.get("entradas", []):
+        inter = (e.get("intermedio") or "").lower().replace(".xlsx", "")
+        if inter and (inter == base or base in inter or inter in base):
+            canonico = e["canonico"]
+            ruta = proyecto / canonico
+            if ruta.exists():
+                media = "application/pdf" if e["tipo"] == ".pdf" else "application/octet-stream"
+                return FileResponse(str(ruta), filename=canonico, media_type=media)
+            break
+    raise HTTPException(404, "Archivo origen no localizado")
+
+
 @router.get("/api/productos/{producto_id}/cotizar")
 def cotizar_14_pasos(
     producto_id: int,
@@ -175,6 +266,11 @@ def cotizar_14_pasos(
         raise HTTPException(404, "Producto no existe")
 
     row = producto_a_row(p)
+
+    # Resolver arancel via DB overrides + default rule (acero=35%, otros=25%)
+    from app.cotizador.lookup import resolver_arancel
+    arancel = resolver_arancel(db, p.categoria, p.subcategoria, p.material)
+
     res = compute_for_row(
         row,
         override_tc=tc,
@@ -182,7 +278,18 @@ def cotizar_14_pasos(
         override_flete_maritimo_usd=flete_maritimo_usd,
         margen_nuestro_pct=margen_nuestro,
         margen_cliente_pct=margen_cliente,
+        override_tasa_pct=arancel.tasa_pct,
     )
+    # Reemplazar la fraccion del result con la resuelta por nuestro lookup
+    # (PricingResult es frozen; usamos dataclass.replace)
+    from dataclasses import replace as _replace
+    res = _replace(res, fraccion_arancelaria=arancel.fraccion)
+
+    # Parametros pais para que el frontend pueda invertir el calculo
+    # (editar retail -> calcular margen efectivo)
+    from app.cotizador.defaults import country_params, DEFAULTS
+    cp = country_params(res.country_code)
+    total_desc_pct = float(cp["descuentos_pct"]) + float(cp["descuentos_na_pct"]) + float(cp["gasto_fijo_pct"])
 
     return {
         "producto_id": producto_id,
@@ -206,9 +313,14 @@ def cotizar_14_pasos(
         "fotos": [f.ruta_relativa for f in p.fotos],
         "fraccion_arancelaria": res.fraccion_arancelaria,
         "tasa_arancelaria_pct": str(res.tasa_arancelaria_pct),
+        "tasa_arancelaria_fuente": arancel.fuente,
+        "tasa_arancelaria_nota": arancel.nota,
         "tipo_cambio": str(res.tipo_cambio),
         "margen_nuestro": str(res.margen_nuestro_effective),
         "margen_cliente": str(res.margen_cliente_effective),
+        # Para invertir el calculo en el frontend
+        "iva_pct": float(cp["iva_pct"]),
+        "total_desc_pct": total_desc_pct,
         "pasos": [
             {
                 "n": i,
@@ -379,3 +491,102 @@ def exportar_categoria(categoria: str, db: SesionDep):
     cat_filter = None if categoria == SIN_CATEGORIA else categoria
     archivo = _correr_llenar_formato_hd(db, xlsx_int, salida, categoria=cat_filter)
     return FileResponse(str(archivo), filename=archivo.name)
+
+
+# ============================================================
+# Aranceles override: CRUD + pagina
+# ============================================================
+
+
+class ArancelBody(BaseModel):
+    categoria: str | None = None
+    material_pattern: str | None = None
+    fraccion: str
+    tasa_pct: float
+    nota: str | None = None
+
+
+def _arancel_to_dict(o: ArancelOverride) -> dict:
+    return {
+        "id": o.id,
+        "categoria": o.categoria,
+        "material_pattern": o.material_pattern,
+        "fraccion": o.fraccion,
+        "tasa_pct": o.tasa_pct,
+        "nota": o.nota,
+    }
+
+
+@router.get("/api/aranceles")
+def listar_aranceles(db: SesionDep):
+    rows = db.query(ArancelOverride).order_by(
+        ArancelOverride.categoria.is_(None),  # nulls al final
+        ArancelOverride.categoria,
+        ArancelOverride.material_pattern,
+    ).all()
+    return {"items": [_arancel_to_dict(o) for o in rows]}
+
+
+@router.post("/api/aranceles")
+def crear_arancel(body: ArancelBody, db: SesionDep):
+    o = ArancelOverride(
+        categoria=(body.categoria or None) or None,
+        material_pattern=(body.material_pattern or None) or None,
+        fraccion=body.fraccion.strip(),
+        tasa_pct=body.tasa_pct,
+        nota=(body.nota or None),
+    )
+    # Normalizar: strings vacios a NULL
+    if o.categoria == "":
+        o.categoria = None
+    if o.material_pattern == "":
+        o.material_pattern = None
+    db.add(o)
+    db.commit()
+    db.refresh(o)
+    return _arancel_to_dict(o)
+
+
+@router.patch("/api/aranceles/{arancel_id}")
+def actualizar_arancel(arancel_id: int, body: ArancelBody, db: SesionDep):
+    o = db.get(ArancelOverride, arancel_id)
+    if not o:
+        raise HTTPException(404, "Arancel no existe")
+    o.categoria = (body.categoria or None) or None
+    o.material_pattern = (body.material_pattern or None) or None
+    o.fraccion = body.fraccion.strip()
+    o.tasa_pct = body.tasa_pct
+    o.nota = body.nota or None
+    if o.categoria == "":
+        o.categoria = None
+    if o.material_pattern == "":
+        o.material_pattern = None
+    db.commit()
+    return _arancel_to_dict(o)
+
+
+@router.delete("/api/aranceles/{arancel_id}")
+def eliminar_arancel(arancel_id: int, db: SesionDep):
+    o = db.get(ArancelOverride, arancel_id)
+    if not o:
+        raise HTTPException(404, "Arancel no existe")
+    db.delete(o)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/aranceles", response_class=HTMLResponse)
+def pagina_aranceles(request: Request, db: SesionDep):
+    """Pagina dedicada para CRUD de overrides de aranceles."""
+    cats = (
+        db.query(Producto.categoria)
+        .distinct()
+        .all()
+    )
+    categorias = sorted(
+        [c for (c,) in cats if c and c != "_descartar"]
+    )
+    return TEMPLATES.TemplateResponse(
+        "aranceles.html",
+        {"request": request, "categorias_disponibles": categorias},
+    )
