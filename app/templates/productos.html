@@ -421,7 +421,7 @@
               </div>
               <div class="flex justify-between">
                 <span class="text-gray-600">× (1 - mc <span x-text="parseFloat(detalle.margen_cliente).toFixed(0)"></span>%):</span>
-                <span x-text="'$ ' + (retailEditado / 1.16 * (1 - parseFloat(detalle.margen_cliente))).toFixed(2)"></span>
+                <span x-text="'$ ' + (retailEditado / 1.16 * (1 - parseFloat(detalle.margen_cliente)/100)).toFixed(2)"></span>
               </div>
               <div class="flex justify-between border-t pt-1">
                 <span class="text-gray-600">Landed unitario (paso 9):</span>
