@@ -569,6 +569,11 @@ def main() -> None:
     # Extraer --mapeo "C=8,O=11,U=16,V=17" si esta presente en argv
     args = list(sys.argv[1:])
     mapeo_str = None
+    # Flag --yes para saltar confirmacion de sobreescritura (uso desde subprocess)
+    auto_yes = False
+    if "--yes" in args:
+        args.remove("--yes")
+        auto_yes = True
     if "--mapeo" in args:
         idx = args.index("--mapeo")
         if idx + 1 >= len(args):
@@ -600,7 +605,15 @@ def main() -> None:
         sys.exit(f"No existe el archivo formato: {archivo_formato}")
 
     archivo_salida = construir_nombre_salida(archivo_origen)
-    confirmar_sobreescritura(archivo_salida)
+    if auto_yes:
+        # Borrar sin preguntar (uso desde subprocess: la app ya valido permisos)
+        if os.path.exists(archivo_salida):
+            try:
+                os.remove(archivo_salida)
+            except PermissionError:
+                sys.exit(f"No se pudo borrar el archivo existente (esta abierto?): {archivo_salida}")
+    else:
+        confirmar_sobreescritura(archivo_salida)
 
     print(f"Mapeo aplicado: {mapeo_datos}")
     n = llenar_formato(archivo_origen, archivo_formato, archivo_salida, mapeo_datos)

@@ -456,8 +456,14 @@ def _correr_llenar_formato_hd(
     formato = proyecto / "Formato HD-Mascotas.xlsb"
     script = proyecto / "llenar_formato_hd.py"
 
-    # Borrar salida previa
-    salida_default = proyecto / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
+    # Replicar la logica de naming de llenar_formato_hd.construir_nombre_salida():
+    # toma stem del intermedio en minusculas y quita el prefijo '_intermedio_'.
+    base_salida = xlsx_int.stem.lower()
+    if base_salida.startswith("_intermedio_"):
+        base_salida = base_salida[len("_intermedio_"):]
+    salida_default = proyecto / f"formato-hd-{base_salida}.xlsx"
+
+    # Borrar todas las salidas posibles previas (default + custom + variantes)
     for p in {salida, salida_default}:
         if p.exists():
             try:
@@ -474,9 +480,10 @@ def _correr_llenar_formato_hd(
     result = subprocess.run(
         [
             _sys.executable, str(script), str(xlsx_int), str(formato),
-            "--mapeo", "C=8,K=11,N=16,O=17",
+            "--mapeo", "C=8,K=11,N=16,O=17", "--yes",
         ],
         capture_output=True, text=True, cwd=str(proyecto),
+        stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         raise HTTPException(500, f"Fallo llenar_formato_hd: {result.stderr[:500]}")
