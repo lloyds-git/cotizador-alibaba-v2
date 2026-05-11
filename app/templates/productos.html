@@ -1,40 +1,199 @@
 {% extends "base.html" %}
 {% block content %}
-<div x-data="{ tc: 20.0, factor: 1.4, margen: 0.40 }">
-  <div class="mb-4 flex gap-4 items-center bg-white p-4 rounded shadow text-sm">
-    <label>Tipo cambio MXN:
-      <input type="number" step="0.1" x-model.number="tc" class="border px-2 py-1 w-20 ml-1">
-    </label>
-    <label>Factor importacion:
-      <input type="number" step="0.05" x-model.number="factor" class="border px-2 py-1 w-20 ml-1">
-    </label>
-    <label>Margen objetivo:
-      <input type="number" step="0.05" x-model.number="margen" class="border px-2 py-1 w-20 ml-1">
-    </label>
-    <input type="text" placeholder="Buscar..." class="border px-3 py-1 rounded flex-1"
-           hx-get="/api/productos" hx-trigger="keyup changed delay:300ms"
-           hx-target="#tbody" name="q">
-    <a href="/exportar" class="bg-green-600 text-white px-4 py-1 rounded">Exportar marcados</a>
+<div x-data="productosApp()" x-init="init()">
+
+  <!-- Barra superior: parametros + busqueda + filtro categoria + exportar -->
+  <div class="mb-4 bg-white p-4 rounded shadow text-sm">
+    <div class="flex gap-4 items-center flex-wrap mb-3">
+      <label>Tipo cambio MXN:
+        <input type="number" step="0.1" x-model.number="tc" class="border px-2 py-1 w-20 ml-1">
+      </label>
+      <label>Factor importacion:
+        <input type="number" step="0.05" x-model.number="factor" class="border px-2 py-1 w-20 ml-1">
+      </label>
+      <label>Margen objetivo:
+        <input type="number" step="0.05" x-model.number="margen" class="border px-2 py-1 w-20 ml-1">
+      </label>
+    </div>
+
+    <div class="flex gap-3 items-center flex-wrap">
+      <input type="text" placeholder="Buscar SKU o descripcion..."
+             x-model="q" @input.debounce.300ms="cargar()"
+             class="border px-3 py-1 rounded flex-1 min-w-[200px]">
+
+      <label class="flex items-center gap-2">
+        <span>Categoria:</span>
+        <select x-model="categoriaFiltro" @change="cargar()"
+                class="border px-2 py-1 rounded">
+          <option value="">Todas</option>
+          <template x-for="c in categorias" :key="c.categoria || '__nil__'">
+            <option :value="c.categoria === null ? '__sin_categoria__' : c.categoria"
+                    x-text="(c.categoria || '(sin categoria)') + ' (' + c.total + ')'"></option>
+          </template>
+        </select>
+      </label>
+
+      <label class="flex items-center gap-1">
+        <input type="checkbox" x-model="soloMarcados" @change="cargar()">
+        Solo marcados
+      </label>
+
+      <button type="button" @click="marcarVisibles(true)"
+              class="bg-blue-100 hover:bg-blue-200 px-3 py-1 rounded text-blue-800">
+        Marcar visibles (<span x-text="productos.length"></span>)
+      </button>
+      <button type="button" @click="marcarVisibles(false)"
+              class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded">
+        Desmarcar visibles
+      </button>
+
+      <button type="button" @click="exportarCategoria()" :disabled="!categoriaFiltro || categoriaFiltro === ''"
+              class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="categoriaFiltro ? 'Exportar categoria ' + categoriaFiltro : 'Selecciona una categoria para exportar por categoria'">
+        Exportar categoria
+      </button>
+      <a href="/exportar" class="bg-green-700 text-white px-4 py-1 rounded">
+        Exportar marcados
+      </a>
+    </div>
+
+    <div class="mt-2 text-xs text-gray-600">
+      <span x-text="productos.length"></span> filas visibles
+      <span x-show="totalMarcados !== null"> &middot;
+        <span x-text="totalMarcados"></span> marcados en total
+      </span>
+    </div>
   </div>
 
+  <!-- Tabla -->
   <table class="bg-white w-full text-sm shadow rounded overflow-hidden">
     <thead class="bg-gray-100 text-left">
       <tr>
         <th class="p-2">Foto</th>
         <th class="p-2">SKU</th>
         <th class="p-2">Descripcion</th>
+        <th class="p-2">Categoria</th>
         <th class="p-2">FOB USD</th>
         <th class="p-2">Landed MXN</th>
         <th class="p-2">Retail MXN</th>
         <th class="p-2">Margen %</th>
-        <th class="p-2">Cotizar</th>
+        <th class="p-2 text-center">Cotizar</th>
       </tr>
     </thead>
-    <tbody id="tbody">
-      {% for p in productos %}
-        {% include "_fila.html" %}
-      {% endfor %}
+    <tbody>
+      <template x-for="p in productos" :key="p.id">
+        <tr class="border-t hover:bg-gray-50">
+          <td class="p-2">
+            <template x-if="p.fotos && p.fotos.length">
+              <img :src="'/' + p.fotos[0]" class="w-16 h-16 object-contain">
+            </template>
+          </td>
+          <td class="p-2 font-mono" x-text="p.sku || ''"></td>
+          <td class="p-2 max-w-md" x-text="p.descripcion"></td>
+          <td class="p-2">
+            <input type="text" :value="p.categoria || ''"
+                   @change="actualizarCategoria(p, $event.target.value)"
+                   class="border px-1 py-0.5 w-28 text-xs rounded">
+          </td>
+          <td class="p-2" x-text="p.fob_usd ? p.fob_usd.toFixed(2) : ''"></td>
+          <td class="p-2" x-text="((p.fob_usd || 0) * tc * factor).toFixed(2)"></td>
+          <td class="p-2" x-text="(((p.fob_usd || 0) * tc * factor / (1 - margen)) * 1.16).toFixed(0)"></td>
+          <td class="p-2" x-text="(margen * 100).toFixed(0) + '%'"></td>
+          <td class="p-2 text-center">
+            <input type="checkbox" :checked="p.marcado_cotizar"
+                   @change="toggleMarcar(p, $event.target.checked)">
+          </td>
+        </tr>
+      </template>
+      <tr x-show="productos.length === 0">
+        <td colspan="9" class="p-4 text-center text-gray-500">No hay productos que coincidan.</td>
+      </tr>
     </tbody>
   </table>
 </div>
+
+<script>
+function productosApp() {
+  return {
+    tc: 20.0,
+    factor: 1.4,
+    margen: 0.40,
+    q: '',
+    categoriaFiltro: '',
+    soloMarcados: false,
+    productos: [],
+    categorias: [],
+    totalMarcados: null,
+
+    async init() {
+      await this.cargarCategorias();
+      await this.cargar();
+    },
+
+    async cargarCategorias() {
+      const r = await fetch('/api/categorias');
+      const j = await r.json();
+      this.categorias = j.items;
+      this.totalMarcados = this.categorias.reduce((s, c) => s + (c.marcados || 0), 0);
+    },
+
+    async cargar() {
+      const params = new URLSearchParams();
+      if (this.q) params.set('q', this.q);
+      if (this.categoriaFiltro) params.set('categoria', this.categoriaFiltro);
+      if (this.soloMarcados) params.set('marcados', 'true');
+      params.set('limit', '1000');
+      const r = await fetch('/api/productos?' + params.toString());
+      const j = await r.json();
+      this.productos = j.items;
+    },
+
+    async toggleMarcar(p, checked) {
+      p.marcado_cotizar = checked;
+      await fetch('/api/productos/' + p.id + '/marcar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marcado: checked }),
+      });
+      await this.cargarCategorias();
+    },
+
+    async actualizarCategoria(p, valor) {
+      const v = (valor || '').trim();
+      p.categoria = v || null;
+      await fetch('/api/productos/' + p.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoria: v }),
+      });
+      await this.cargarCategorias();
+      // si hay filtro de categoria activo, recargar para que se vaya/llegue
+      if (this.categoriaFiltro) await this.cargar();
+    },
+
+    async marcarVisibles(marcado) {
+      if (this.productos.length === 0) return;
+      const ids = this.productos.map(p => p.id);
+      await fetch('/api/productos/marcar-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, marcado }),
+      });
+      this.productos.forEach(p => p.marcado_cotizar = marcado);
+      await this.cargarCategorias();
+    },
+
+    exportarCategoria() {
+      if (!this.categoriaFiltro) {
+        alert('Selecciona una categoria primero.');
+        return;
+      }
+      // El backend marca todos los de la categoria y desmarca el resto antes de exportar.
+      window.location.href = '/exportar/' + encodeURIComponent(this.categoriaFiltro);
+      // refrescar tras unos segundos para reflejar el nuevo estado de marcas
+      setTimeout(() => { this.cargarCategorias(); this.cargar(); }, 1500);
+    },
+  };
+}
+</script>
 {% endblock %}

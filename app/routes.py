@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from typing import Annotated
 
@@ -5,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import db as db_module
@@ -12,6 +14,8 @@ from app.modelos import Producto
 
 router = APIRouter()
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+SIN_CATEGORIA = "__sin_categoria__"  # sentinela en query string
 
 
 def get_db():
@@ -36,6 +40,22 @@ class ActualizarBody(BaseModel):
     descripcion: str | None = None
     notas: str | None = None
     marcado_cotizar: bool | None = None
+    categoria: str | None = None
+    subcategoria: str | None = None
+
+
+class MarcarBulkBody(BaseModel):
+    ids: list[int]
+    marcado: bool
+
+
+def _aplicar_filtro_categoria(query, categoria: str | None):
+    """Aplica filtro de categoria, soportando el sentinela 'sin_categoria'."""
+    if categoria is None:
+        return query
+    if categoria == SIN_CATEGORIA:
+        return query.filter(Producto.categoria.is_(None))
+    return query.filter(Producto.categoria == categoria)
 
 
 @router.get("/api/productos")
@@ -43,6 +63,7 @@ def listar_productos(
     db: SesionDep,
     marcados: bool | None = Query(None),
     proveedor_id: int | None = Query(None),
+    categoria: str | None = Query(None),
     q: str | None = Query(None),
     limit: int = Query(200, le=1000),
 ):
@@ -51,6 +72,7 @@ def listar_productos(
         query = query.filter(Producto.marcado_cotizar == marcados)
     if proveedor_id is not None:
         query = query.filter(Producto.proveedor_id == proveedor_id)
+    query = _aplicar_filtro_categoria(query, categoria)
     if q:
         ql = f"%{q}%"
         query = query.filter(
@@ -71,6 +93,8 @@ def listar_productos(
                 "medidas": p.medidas,
                 "moq": p.moq,
                 "cbm": p.cbm,
+                "categoria": p.categoria,
+                "subcategoria": p.subcategoria,
                 "marcado_cotizar": p.marcado_cotizar,
                 "proveedor": p.proveedor.nombre if p.proveedor else None,
                 "fotos": [f.ruta_relativa for f in p.fotos],
@@ -78,6 +102,34 @@ def listar_productos(
             for p in items
         ],
     }
+
+
+@router.get("/api/categorias")
+def listar_categorias(db: SesionDep):
+    """Devuelve categorias con total y cuantos marcados, ordenadas por total desc."""
+    filas = (
+        db.query(
+            Producto.categoria,
+            func.count(Producto.id).label("total"),
+            func.sum(
+                func.coalesce(Producto.marcado_cotizar, 0)
+            ).label("marcados"),
+        )
+        .group_by(Producto.categoria)
+        .all()
+    )
+    out = []
+    for cat, total, marcados in filas:
+        out.append(
+            {
+                "categoria": cat,
+                "total": int(total),
+                "marcados": int(marcados or 0),
+            }
+        )
+    # ordenar por total desc, dejando None al final
+    out.sort(key=lambda r: (r["categoria"] is None, -r["total"]))
+    return {"items": out}
 
 
 @router.post("/api/productos/{producto_id}/marcar")
@@ -88,6 +140,20 @@ def marcar(producto_id: int, body: MarcarBody, db: SesionDep):
     p.marcado_cotizar = body.marcado
     db.commit()
     return {"ok": True, "marcado": p.marcado_cotizar}
+
+
+@router.post("/api/productos/marcar-bulk")
+def marcar_bulk(body: MarcarBulkBody, db: SesionDep):
+    """Marca o desmarca varios productos a la vez."""
+    if not body.ids:
+        return {"ok": True, "afectados": 0}
+    n = (
+        db.query(Producto)
+        .filter(Producto.id.in_(body.ids))
+        .update({Producto.marcado_cotizar: body.marcado}, synchronize_session=False)
+    )
+    db.commit()
+    return {"ok": True, "afectados": n}
 
 
 @router.patch("/api/productos/{producto_id}")
@@ -103,6 +169,11 @@ def actualizar(producto_id: int, body: ActualizarBody, db: SesionDep):
         p.notas = body.notas
     if body.marcado_cotizar is not None:
         p.marcado_cotizar = body.marcado_cotizar
+    if body.categoria is not None:
+        # Cadena vacia significa "limpiar"
+        p.categoria = body.categoria.strip() or None
+    if body.subcategoria is not None:
+        p.subcategoria = body.subcategoria.strip() or None
     db.commit()
     return {"ok": True}
 
@@ -110,21 +181,43 @@ def actualizar(producto_id: int, body: ActualizarBody, db: SesionDep):
 @router.get("/", response_class=HTMLResponse)
 def home(request: Request, db: SesionDep):
     productos = db.query(Producto).limit(500).all()
+    # Categorias para el dropdown de filtro
+    cats = (
+        db.query(Producto.categoria, func.count(Producto.id))
+        .group_by(Producto.categoria)
+        .all()
+    )
+    categorias = sorted(
+        [
+            {"categoria": c, "total": int(n)}
+            for c, n in cats
+        ],
+        key=lambda r: (r["categoria"] is None, -r["total"]),
+    )
     return TEMPLATES.TemplateResponse(
         "productos.html",
-        {"request": request, "productos": productos},
+        {
+            "request": request,
+            "productos": productos,
+            "categorias": categorias,
+        },
     )
 
 
-@router.get("/exportar")
-def exportar(db: SesionDep):
-    """Genera xlsx intermedio + ejecuta llenar_formato_hd.py."""
+def _correr_llenar_formato_hd(
+    db: Session,
+    xlsx_int: Path,
+    salida: Path,
+) -> Path:
+    """Genera intermedio desde marcados + corre llenar_formato_hd.py.
+
+    Devuelve la ruta del archivo HD producido. Lanza HTTPException en error.
+    """
     import subprocess
     import sys as _sys
     from app.exportar import generar_formato_hd_desde_marcados
 
     proyecto = Path(__file__).parent.parent
-    xlsx_int = proyecto / "_intermedio_seleccion.xlsx"
     n = generar_formato_hd_desde_marcados(
         session=db,
         xlsx_intermedio=str(xlsx_int),
@@ -136,25 +229,75 @@ def exportar(db: SesionDep):
     formato = proyecto / "Formato HD-Mascotas.xlsb"
     script = proyecto / "llenar_formato_hd.py"
 
-    # Borrar salida previa para evitar prompt interactivo de sobreescritura
-    salida_esperada = proyecto / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
-    if salida_esperada.exists():
-        try:
-            salida_esperada.unlink()
-        except PermissionError:
-            raise HTTPException(
-                500,
-                f"No puedo borrar el archivo anterior (esta abierto en Excel?): {salida_esperada.name}",
-            )
+    # Borrar salida previa
+    salida_default = proyecto / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
+    for p in {salida, salida_default}:
+        if p.exists():
+            try:
+                p.unlink()
+            except PermissionError:
+                raise HTTPException(
+                    500,
+                    f"No puedo borrar el archivo anterior (esta abierto en Excel?): {p.name}",
+                )
 
+    # El intermedio de exportar.py tiene 15 columnas (Foto, SKU, Descripcion, ...,
+    # CBM=K, Lead time=N, FOB USD=O). El default de llenar_formato_hd.py asume
+    # 22 columnas (layout viejo de pdf_a_formato_hd), por eso forzamos el mapeo.
     result = subprocess.run(
-        [_sys.executable, str(script), str(xlsx_int), str(formato)],
+        [
+            _sys.executable, str(script), str(xlsx_int), str(formato),
+            "--mapeo", "C=8,K=11,N=16,O=17",
+        ],
         capture_output=True, text=True, cwd=str(proyecto),
     )
     if result.returncode != 0:
         raise HTTPException(500, f"Fallo llenar_formato_hd: {result.stderr[:500]}")
 
-    if not salida_esperada.exists():
-        raise HTTPException(500, f"No encontre el archivo de salida: {salida_esperada.name}")
+    # llenar_formato_hd.py escribe a salida_default; si nos pidieron otro nombre, renombrar.
+    if not salida_default.exists():
+        raise HTTPException(500, f"No encontre el archivo de salida: {salida_default.name}")
+    if salida_default != salida:
+        salida_default.replace(salida)
+    return salida
 
-    return FileResponse(str(salida_esperada), filename=salida_esperada.name)
+
+@router.get("/exportar")
+def exportar(db: SesionDep):
+    """Genera HD desde la seleccion actual (compatibilidad)."""
+    proyecto = Path(__file__).parent.parent
+    xlsx_int = proyecto / "_intermedio_seleccion.xlsx"
+    salida = proyecto / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
+    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida)
+    return FileResponse(str(archivo), filename=archivo.name)
+
+
+@router.get("/exportar/{categoria}")
+def exportar_categoria(categoria: str, db: SesionDep):
+    """Genera HD para una categoria. Marca todos los productos de esa categoria,
+    desmarca el resto, ejecuta el pipeline y devuelve el archivo.
+    """
+    proyecto = Path(__file__).parent.parent
+
+    # Validar que la categoria existe (con productos)
+    q = db.query(Producto)
+    q = _aplicar_filtro_categoria(q, categoria)
+    n_en_cat = q.count()
+    if n_en_cat == 0:
+        raise HTTPException(404, f"Categoria '{categoria}' no tiene productos.")
+
+    # Reset de marcas y marcar solo la categoria
+    db.query(Producto).update({Producto.marcado_cotizar: False}, synchronize_session=False)
+    _aplicar_filtro_categoria(db.query(Producto), categoria).update(
+        {Producto.marcado_cotizar: True}, synchronize_session=False
+    )
+    db.commit()
+
+    # Nombre con fecha del dia (no del correo origen, como dice el plan)
+    cat_slug = "sin-categoria" if categoria == SIN_CATEGORIA else categoria
+    fecha = date.today().strftime("%Y%m%d")
+    xlsx_int = proyecto / f"_intermedio_{cat_slug}-{fecha}.xlsx"
+    salida = proyecto / f"formato-hd-{cat_slug}-{fecha}.xlsx"
+
+    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida)
+    return FileResponse(str(archivo), filename=archivo.name)

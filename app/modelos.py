@@ -44,6 +44,9 @@ class Producto(Base):
     pzas_40hq = Column(Integer)
     lead_time = Column(String(100))
 
+    categoria = Column(String(50))
+    subcategoria = Column(String(100))
+
     marcado_cotizar = Column(Boolean, default=False, nullable=False)
     notas = Column(Text)
 

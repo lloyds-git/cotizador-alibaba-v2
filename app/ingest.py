@@ -137,6 +137,8 @@ def ingestar_xlsx_intermedio(
     fotos_dir = Path(fotos_destino)
     fotos_dir.mkdir(parents=True, exist_ok=True)
 
+    import hashlib
+
     nuevos = 0
     for fila in range(2, ws.max_row + 1):
         sku = ws.cell(fila, COL_SKU).value or ""
@@ -146,11 +148,19 @@ def ingestar_xlsx_intermedio(
         if not (sku or desc):
             continue
 
-        prod = None
-        if sku:
-            prod = session.query(Producto).filter_by(
-                proveedor_id=prov.id, sku=sku
-            ).first()
+        # Si no hay SKU real, generamos uno sintetico determinista a partir
+        # de la descripcion. Mantiene idempotencia (re-ingestar produce el
+        # mismo SKU) y evita la colision de UNIQUE(proveedor_id, sku='')
+        # cuando hay varios productos sin SKU del mismo proveedor.
+        sku_sintetico = False
+        if not sku:
+            h = hashlib.md5(desc.encode("utf-8")).hexdigest()[:10]
+            sku = f"AUTO-{h}"
+            sku_sintetico = True
+
+        prod = session.query(Producto).filter_by(
+            proveedor_id=prov.id, sku=sku
+        ).first()
 
         es_nuevo = prod is None
         if es_nuevo:
