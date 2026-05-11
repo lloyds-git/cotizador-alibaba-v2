@@ -243,6 +243,64 @@
           </div>
         </template>
 
+        <!-- Costos adicionales (caja color, EXW->FOB, etc.) -->
+        <div class="mb-3 bg-blue-50 border border-blue-200 p-3 rounded">
+          <div class="flex justify-between items-baseline mb-2">
+            <span class="text-xs uppercase font-semibold text-blue-800">
+              Costos adicionales al FOB
+            </span>
+            <span class="text-xs text-blue-600 font-mono"
+                  x-show="detalle.costos_adicionales_total_usd > 0">
+              +$<span x-text="detalle.costos_adicionales_total_usd.toFixed(2)"></span> USD
+            </span>
+          </div>
+          <template x-if="detalle.costos_adicionales && detalle.costos_adicionales.length">
+            <table class="w-full text-xs mb-2">
+              <tbody>
+                <template x-for="c in detalle.costos_adicionales" :key="c.id">
+                  <tr class="border-b last:border-0">
+                    <td class="py-1" x-text="c.concepto"></td>
+                    <td class="py-1 text-right font-mono"
+                        x-text="'$' + c.monto_usd.toFixed(2)"></td>
+                    <td class="py-1 text-right">
+                      <button type="button" @click="borrarCosto(c)"
+                              class="text-red-600 hover:underline text-[10px]">borrar</button>
+                    </td>
+                  </tr>
+                </template>
+                <tr class="text-xs text-gray-600 border-t-2">
+                  <td class="py-1">FOB original:</td>
+                  <td class="py-1 text-right font-mono"
+                      x-text="'$' + (detalle.fob_usd || 0).toFixed(2)"></td>
+                  <td></td>
+                </tr>
+                <tr class="text-xs font-semibold text-blue-800">
+                  <td class="py-1">FOB ajustado:</td>
+                  <td class="py-1 text-right font-mono"
+                      x-text="'$' + (detalle.fob_efectivo_usd || 0).toFixed(2)"></td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+          <template x-if="!detalle.costos_adicionales || !detalle.costos_adicionales.length">
+            <div class="text-xs text-gray-500 mb-2">Sin costos adicionales. El FOB efectivo es el FOB original ($<span x-text="(detalle.fob_usd || 0).toFixed(2)"></span>).</div>
+          </template>
+          <!-- Form para agregar nuevo -->
+          <div class="flex gap-1 items-center text-xs mt-2">
+            <input type="text" x-model="nuevoCostoConcepto"
+                   placeholder="caja color / EXW->FOB / certificacion..."
+                   class="border px-2 py-1 rounded flex-1 text-xs">
+            <input type="number" step="0.01" x-model.number="nuevoCostoMonto"
+                   placeholder="USD"
+                   class="border px-2 py-1 rounded w-20 text-xs font-mono">
+            <button type="button" @click="agregarCosto()"
+                    class="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs">
+              + agregar
+            </button>
+          </div>
+        </div>
+
         <!-- Resumen margen Lloyds (siempre visible) -->
         <template x-if="parseFloat(detalle.pasos[8].valor) > 0">
           <div class="mb-3 rounded-lg p-3 border-2"
@@ -271,17 +329,20 @@
                   <td class="text-right" x-text="'$ ' + parseFloat(detalle.pasos[8].valor).toFixed(2)"></td>
                 </tr>
                 <tr>
-                  <td class="text-gray-600">Venta a Lloyds (paso 11):</td>
-                  <td class="text-right" x-text="'$ ' + parseFloat(detalle.pasos[10].valor).toFixed(2)"></td>
+                  <td class="text-gray-600">
+                    Venta a Lloyds:
+                    <span class="text-[10px] text-gray-400" x-show="retailEditado">(derivada del retail editado)</span>
+                    <span class="text-[10px] text-gray-400" x-show="!retailEditado">(paso 11 motor)</span>
+                  </td>
+                  <td class="text-right" x-text="'$ ' + ventaActual().toFixed(2)"></td>
                 </tr>
                 <tr class="text-gray-500">
                   <td class="pl-3 text-[10px]">+ gastos y descuentos (<span x-text="detalle.total_desc_pct.toFixed(0)"></span>%):</td>
-                  <td class="text-right text-[10px]" x-text="'$ ' + (parseFloat(detalle.pasos[10].valor) * detalle.total_desc_pct / 100).toFixed(2)"></td>
+                  <td class="text-right text-[10px]" x-text="'$ ' + (ventaActual() * detalle.total_desc_pct / 100).toFixed(2)"></td>
                 </tr>
                 <tr class="border-t">
                   <td class="text-gray-600">Costo total:</td>
-                  <td class="text-right font-semibold"
-                      x-text="'$ ' + (parseFloat(detalle.pasos[8].valor) + parseFloat(detalle.pasos[10].valor) * detalle.total_desc_pct / 100).toFixed(2)"></td>
+                  <td class="text-right font-semibold" x-text="'$ ' + costoTotalActual().toFixed(2)"></td>
                 </tr>
                 <tr>
                   <td class="text-gray-600">Utilidad:</td>
@@ -289,13 +350,17 @@
                       :class="utilidadAbs() >= 0 ? 'text-green-700' : 'text-red-700'"
                       x-text="'$ ' + utilidadAbs().toFixed(2)"></td>
                 </tr>
+                <tr class="text-gray-400 text-[10px]" x-show="retailEditado">
+                  <td class="pt-1">Retail c/IVA usado:</td>
+                  <td class="pt-1 text-right" x-text="'$ ' + retailEditado.toFixed(2)"></td>
+                </tr>
               </tbody>
             </table>
 
             <template x-if="margenReal() < parseFloat(detalle.margen_nuestro)/100">
               <div class="text-[11px] text-red-700 mt-2">
                 ⚠ Margen real por debajo del objetivo. Sube el multiplicador
-                (campo 'Margen Lloyds' arriba) o renegocia FOB/arancel.
+                (campo 'Margen Lloyds' arriba) o ajusta retail al alza.
               </div>
             </template>
           </div>
@@ -398,6 +463,8 @@ function productosApp() {
     detalle: null,
     origen: null,
     retailEditado: null,
+    nuevoCostoConcepto: '',
+    nuevoCostoMonto: null,
 
     async init() {
       await this.cargarCategorias();
@@ -530,25 +597,43 @@ function productosApp() {
     //   venta = paso 11 (lo que cobra Lloyds al retailer)
     //   costo_total = landing + venta * total_desc%
     //   utilidad = venta - costo_total
-    // Esta es la forma 'aditiva' contable de calcular margen sobre venta.
+    // Cuando hay retailEditado, recalcula la venta hacia atras desde ese
+    // retail (paso 13 fijo, despeja paso 11 con mc + iva).
+    ventaActual() {
+      if (!this.detalle) return 0;
+      if (this.retailEditado && this.retailEditado > 0) {
+        const iva = (this.detalle.iva_pct || 16) / 100;
+        const mc = parseFloat(this.detalle.margen_cliente) / 100;
+        const paso12 = this.retailEditado / (1 + iva);
+        return paso12 * (1 - mc);
+      }
+      return parseFloat(this.detalle.pasos[10].valor);
+    },
+
     margenReal() {
       if (!this.detalle) return 0;
       const landing = parseFloat(this.detalle.pasos[8].valor);
-      const venta = parseFloat(this.detalle.pasos[10].valor);
+      const venta = this.ventaActual();
       if (venta <= 0) return 0;
       const td = (this.detalle.total_desc_pct || 34) / 100;
       const costo_total = landing + venta * td;
-      const utilidad = venta - costo_total;
-      return utilidad / venta;
+      return (venta - costo_total) / venta;
     },
 
     utilidadAbs() {
       if (!this.detalle) return 0;
       const landing = parseFloat(this.detalle.pasos[8].valor);
-      const venta = parseFloat(this.detalle.pasos[10].valor);
+      const venta = this.ventaActual();
       const td = (this.detalle.total_desc_pct || 34) / 100;
-      const costo_total = landing + venta * td;
-      return venta - costo_total;
+      return venta - landing - venta * td;
+    },
+
+    costoTotalActual() {
+      if (!this.detalle) return 0;
+      const landing = parseFloat(this.detalle.pasos[8].valor);
+      const venta = this.ventaActual();
+      const td = (this.detalle.total_desc_pct || 34) / 100;
+      return landing + venta * td;
     },
 
     margenEfectivo(retailOverride = null) {
@@ -576,6 +661,34 @@ function productosApp() {
 
     refrescarDetalle() {
       if (this.detalle) this.cargarDetalle(this.detalle.producto_id);
+    },
+
+    async agregarCosto() {
+      if (!this.detalle) return;
+      const concepto = (this.nuevoCostoConcepto || '').trim();
+      const monto = parseFloat(this.nuevoCostoMonto);
+      if (!concepto) { alert('Escribe un concepto'); return; }
+      if (!monto || monto <= 0) { alert('Monto USD debe ser > 0'); return; }
+      const r = await fetch(`/api/productos/${this.detalle.producto_id}/costos-adicionales`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ concepto, monto_usd: monto }),
+      });
+      if (!r.ok) {
+        alert('Error: ' + r.status);
+        return;
+      }
+      this.nuevoCostoConcepto = '';
+      this.nuevoCostoMonto = null;
+      await this.refrescarDetalle();
+    },
+
+    async borrarCosto(c) {
+      if (!confirm(`Borrar costo '${c.concepto}' (+$${c.monto_usd})?`)) return;
+      await fetch(`/api/productos/${c.producto_id}/costos-adicionales/${c.id}`, {
+        method: 'DELETE',
+      });
+      await this.refrescarDetalle();
     },
 
     exportarCategoria() {

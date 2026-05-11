@@ -67,6 +67,26 @@ class Foto(Base):
     producto = relationship("Producto", back_populates="fotos")
 
 
+class CostoAdicional(Base):
+    """Costos adicionales al FOB china por producto.
+
+    Se usa para EXW->FOB, caja color, certificacion, retrabajo, etc.
+    Se SUMAN al fob_usd del producto antes de pasar al motor 14 pasos.
+
+    Permanente: queda registro de cuando/quien/cuanto se agrego para
+    auditoria. Multiple costos por producto (caja+EXW+etc).
+    """
+    __tablename__ = "costos_adicionales"
+    id = Column(Integer, primary_key=True)
+    producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
+    concepto = Column(String(100), nullable=False)  # 'caja color', 'EXW->FOB', etc
+    monto_usd = Column(Float, nullable=False)
+    notas = Column(Text)
+    creado_en = Column(DateTime, default=datetime.utcnow)
+
+    producto = relationship("Producto", backref="costos_adicionales")
+
+
 class ArancelOverride(Base):
     """Overrides de fraccion arancelaria y tasa por categoria y material.
 

@@ -10,7 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.modelos import Producto, ArancelOverride
+from app.modelos import Producto, ArancelOverride, CostoAdicional
 
 router = APIRouter()
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -271,6 +271,17 @@ def cotizar_14_pasos(
 
     row = producto_a_row(p)
 
+    # Sumar costos adicionales (caja color, EXW->FOB, etc.) al FOB efectivo
+    costos = (
+        db.query(CostoAdicional)
+        .filter_by(producto_id=producto_id)
+        .all()
+    )
+    suma_costos = sum(c.monto_usd for c in costos)
+    fob_original = row["unit_price"] or 0
+    if suma_costos > 0:
+        row["unit_price"] = fob_original + suma_costos
+
     # Resolver arancel via DB overrides + default rule (acero=35%, otros=25%)
     from app.cotizador.lookup import resolver_arancel
     arancel = resolver_arancel(db, p.categoria, p.subcategoria, p.material)
@@ -313,6 +324,9 @@ def cotizar_14_pasos(
         "categoria": p.categoria,
         "subcategoria": p.subcategoria,
         "fob_usd": p.fob_usd,
+        "fob_efectivo_usd": fob_original + suma_costos if suma_costos > 0 else p.fob_usd,
+        "costos_adicionales_total_usd": suma_costos,
+        "costos_adicionales": [_costo_to_dict(c) for c in costos],
         "material": p.material,
         "medidas": p.medidas,
         "peso_kg": p.peso_kg,
@@ -586,6 +600,79 @@ def eliminar_arancel(arancel_id: int, db: SesionDep):
     if not o:
         raise HTTPException(404, "Arancel no existe")
     db.delete(o)
+    db.commit()
+    return {"ok": True}
+
+
+# ============================================================
+# Costos adicionales por producto (caja color, EXW->FOB, etc)
+# ============================================================
+
+
+class CostoAdicionalBody(BaseModel):
+    concepto: str
+    monto_usd: float
+    notas: str | None = None
+
+
+def _costo_to_dict(c: CostoAdicional) -> dict:
+    return {
+        "id": c.id,
+        "producto_id": c.producto_id,
+        "concepto": c.concepto,
+        "monto_usd": c.monto_usd,
+        "notas": c.notas,
+        "creado_en": c.creado_en.isoformat() if c.creado_en else None,
+    }
+
+
+@router.get("/api/productos/{producto_id}/costos-adicionales")
+def listar_costos(producto_id: int, db: SesionDep):
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+    costos = (
+        db.query(CostoAdicional)
+        .filter_by(producto_id=producto_id)
+        .order_by(CostoAdicional.creado_en)
+        .all()
+    )
+    total = sum(c.monto_usd for c in costos)
+    return {
+        "items": [_costo_to_dict(c) for c in costos],
+        "total_usd": total,
+        "fob_original": p.fob_usd,
+        "fob_ajustado": (p.fob_usd or 0) + total,
+    }
+
+
+@router.post("/api/productos/{producto_id}/costos-adicionales")
+def agregar_costo(producto_id: int, body: CostoAdicionalBody, db: SesionDep):
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+    if not body.concepto.strip():
+        raise HTTPException(400, "Concepto requerido")
+    if body.monto_usd <= 0:
+        raise HTTPException(400, "monto_usd debe ser > 0")
+    c = CostoAdicional(
+        producto_id=producto_id,
+        concepto=body.concepto.strip(),
+        monto_usd=body.monto_usd,
+        notas=(body.notas or None),
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return _costo_to_dict(c)
+
+
+@router.delete("/api/productos/{producto_id}/costos-adicionales/{costo_id}")
+def borrar_costo(producto_id: int, costo_id: int, db: SesionDep):
+    c = db.get(CostoAdicional, costo_id)
+    if not c or c.producto_id != producto_id:
+        raise HTTPException(404, "Costo no existe")
+    db.delete(c)
     db.commit()
     return {"ok": True}
 
