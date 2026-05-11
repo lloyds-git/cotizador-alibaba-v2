@@ -93,10 +93,13 @@ def _cotizar_producto(
     """Devuelve los datos de cotizacion para exportar.
 
     Resolucion de fuente:
-      1. Si el producto tiene snapshot guardado mas reciente, se usa para
-         retail/venta y los settings persistidos del snapshot.
-      2. Si no hay snapshot, corre el motor con los `params` recibidos
-         (TC, margenes, flete, descuentos de la barra superior del UI).
+      1. Si llegan `params` no vacios (usuario movio algo en la barra),
+         se IGNORA el snapshot y se recalcula todo con esos params.
+         Esto evita que un snapshot viejo congele retail/margenes cuando
+         el usuario cambio el TC o los margenes en la barra superior.
+      2. Si NO llegan params (request sin query string) y hay snapshot,
+         se usa el snapshot (retail editado, venta y margen guardados).
+      3. Si no hay nada, motor con defaults.
 
     Margen HD en los exports SIEMPRE se recalcula con la formula:
         margen_hd = 1 - venta_hd / (retail_civa / 1.16)
@@ -110,6 +113,8 @@ def _cotizar_producto(
             gastos_aduanales_pct. Cualquier subset.
     """
     params = params or {}
+    # Si llegan params no vacios, el snapshot se ignora completamente
+    usar_snapshot_si_existe = not bool(params)
     base = {
         "fob_efectivo_usd": fob_efectivo,
         "piezas_contenedor": 0,
@@ -138,10 +143,9 @@ def _cotizar_producto(
             .first()
         )
 
-        # Settings y overrides para el motor.
-        # Si hay snapshot, sus params toman precedencia sobre params de barra.
-        snap_params = {}
-        if snap:
+        # Si llegan params explicitos, ignorar snapshot. Si no, usar snapshot
+        # como fuente preferida (con fallback a None para usar defaults).
+        if usar_snapshot_si_existe and snap:
             snap_params = {
                 "tc": snap.tc,
                 "margen_nuestro_pct": snap.margen_nuestro_pct,
@@ -153,6 +157,8 @@ def _cotizar_producto(
                 "gasto_fijo_pct": snap.gasto_fijo_pct,
                 "gastos_aduanales_pct": snap.gastos_aduanales_pct,
             }
+        else:
+            snap_params = {}
 
         # Resolver cada param: snapshot > params barra > None (engine usa default)
         def pick(k: str):
@@ -203,14 +209,14 @@ def _cotizar_producto(
             "retail_redondeado_mxn": retail_redondeado,
         })
 
-        if snap and snap.retail_final_mxn and snap.retail_final_mxn > 0:
-            # Retail viene del snapshot (editado manualmente), venta tambien
+        if usar_snapshot_si_existe and snap and snap.retail_final_mxn and snap.retail_final_mxn > 0:
+            # Sin params: retail editado del snapshot manda
             retail_civa = float(snap.retail_final_mxn)
             venta_hd = float(snap.venta_lloyds_mxn or venta_motor)
             margen_lloyds = float(snap.margen_real_pct or 0) / 100
             base["fuente"] = "snapshot"
         else:
-            # Sin snapshot: usar motor corrido con params actuales
+            # Con params explicitos, o sin snapshot: usar motor con params/defaults
             retail_civa = retail_motor
             venta_hd = venta_motor
             cp = country_params(res.country_code, settings=settings)
