@@ -20,7 +20,11 @@ El intermedio tiene 17 columnas:
     N  Lead time
     O  Venta HD MXN (paso 11 redondeado al entero) -> "DOMESTIC COST" del HD
     P  Retail c/IVA MXN (paso 13 redondeado al entero) -> "SUGGESTED RETAIL"
-    Q  Margen Lloyds real (decimal 0.25 = 25%) -> "THD MARGIN"
+    Q  Margen HD (decimal 0.30 = 30%, formula 1-venta/(retail/1.16)) -> "THD MARGIN"
+
+Si el producto tiene snapshots guardados, _cotizar_producto usa el mas
+reciente para venta y retail (refleja edicion manual del usuario en el
+panel) en lugar de los pasos 11/13 default del motor.
 """
 
 from pathlib import Path
@@ -32,7 +36,7 @@ from openpyxl.styles import Font
 
 from sqlalchemy.orm import Session
 
-from app.modelos import Producto, CostoAdicional, Foto
+from app.modelos import Producto, CostoAdicional, Foto, CotizacionSnapshot
 
 
 def _resolver_foto_path(producto: Producto, base_fotos: str, db: Session) -> Path | None:
@@ -66,11 +70,29 @@ def _resolver_foto_path(producto: Producto, base_fotos: str, db: Session) -> Pat
     return None
 
 
-def _cotizar_producto(producto: Producto, fob_efectivo: float, db: Session) -> dict:
-    """Corre el motor 14 pasos con defaults y devuelve un dict con TODOS los
-    datos relevantes para los exports (HD + interno).
+IVA_MX = 0.16  # IVA Mexico para invertir retail c/IVA -> sin IVA
 
-    Si el motor falla o falta info, devuelve ceros.
+
+def _margen_hd(retail_civa: float, venta_hd: float) -> float:
+    """Margen HD = 1 - venta_hd / (retail / 1.16). Devuelve decimal (0.30 = 30%)."""
+    if retail_civa <= 0 or venta_hd <= 0:
+        return 0.0
+    retail_siva = retail_civa / (1 + IVA_MX)
+    if retail_siva <= 0:
+        return 0.0
+    return 1 - venta_hd / retail_siva
+
+
+def _cotizar_producto(producto: Producto, fob_efectivo: float, db: Session) -> dict:
+    """Devuelve los datos de cotizacion para exportar. Si el producto tiene
+    al menos un snapshot guardado, usa el MAS RECIENTE (retail editado del
+    usuario, margen real persistido). Si no, corre el motor 14 pasos con
+    defaults.
+
+    Margen HD en los exports SIEMPRE se recalcula con la formula:
+        margen_hd = 1 - venta_hd / (retail_civa / 1.16)
+    asi refleja el margen real del retailer aun cuando el retail haya sido
+    movido manualmente.
     """
     base = {
         "fob_efectivo_usd": fob_efectivo,
@@ -84,6 +106,7 @@ def _cotizar_producto(producto: Producto, fob_efectivo: float, db: Session) -> d
         "retail_redondeado_mxn": 0.0,
         "margen_lloyds_real": 0.0,
         "margen_cliente_pct": 0.0,
+        "fuente": "motor",  # 'motor' | 'snapshot'
     }
     try:
         from app.cotizador.adapter import producto_a_row
@@ -101,23 +124,46 @@ def _cotizar_producto(producto: Producto, fob_efectivo: float, db: Session) -> d
             override_tasa_pct=arancel.tasa_pct,
         )
         landed = float(res.paso9)
-        venta = float(res.paso11)
-        retail = float(res.paso13)
+        venta_motor = float(res.paso11)
+        retail_motor = float(res.paso13)
         retail_redondeado = float(res.paso14)
-        cp = country_params(res.country_code, settings=settings)
-        td = (float(cp["descuentos_pct"]) + float(cp["descuentos_na_pct"]) + float(cp["gasto_fijo_pct"])) / 100
-        margen_real = (1 - landed / venta - td) if venta > 0 else 0
+
         base.update({
             "piezas_contenedor": int(row["piezas_contenedor"] or 0),
             "tasa_arancelaria_pct": float(arancel.tasa_pct),
             "fraccion": arancel.fraccion or "",
             "tipo_cambio": float(res.tipo_cambio),
             "landed_unit_mxn": landed,
-            "venta_hd_mxn": venta,
-            "retail_civa_mxn": retail,
             "retail_redondeado_mxn": retail_redondeado,
-            "margen_lloyds_real": margen_real,
-            "margen_cliente_pct": float(res.margen_cliente_effective),
+        })
+
+        # Buscar el snapshot mas reciente del producto
+        snap = (
+            db.query(CotizacionSnapshot)
+            .filter_by(producto_id=producto.id)
+            .order_by(CotizacionSnapshot.creado_en.desc())
+            .first()
+        )
+
+        if snap and snap.retail_final_mxn and snap.retail_final_mxn > 0:
+            retail_civa = float(snap.retail_final_mxn)
+            venta_hd = float(snap.venta_lloyds_mxn or venta_motor)
+            margen_lloyds = float(snap.margen_real_pct or 0) / 100
+            base["fuente"] = "snapshot"
+        else:
+            retail_civa = retail_motor
+            venta_hd = venta_motor
+            cp = country_params(res.country_code, settings=settings)
+            td = (float(cp["descuentos_pct"]) + float(cp["descuentos_na_pct"]) + float(cp["gasto_fijo_pct"])) / 100
+            margen_lloyds = (1 - landed / venta_hd - td) if venta_hd > 0 else 0
+
+        base.update({
+            "venta_hd_mxn": venta_hd,
+            "retail_civa_mxn": retail_civa,
+            "margen_lloyds_real": margen_lloyds,
+            # Margen HD calculado con la formula pedida:
+            # 1 - venta_hd / (retail_civa / 1.16)
+            "margen_cliente_pct": _margen_hd(retail_civa, venta_hd) * 100,
         })
     except Exception:
         pass
@@ -140,7 +186,7 @@ def _construir_xlsx_intermedio(
         "Foto", "SKU", "Descripcion", "Medidas", "Material", "Peso (kg)",
         "Color", "MOQ", "Packing", "Carton dims", "CBM",
         "Pzas 20ft", "Pzas 40hq", "Lead time", "Venta HD MXN",
-        "Retail c/IVA MXN", "Margen Lloyds",
+        "Retail c/IVA MXN", "Margen HD",
     ]
     for i, h in enumerate(headers, 1):
         c = ws.cell(row=1, column=i, value=h)
@@ -178,7 +224,10 @@ def _construir_xlsx_intermedio(
         ws.cell(i, 14, value=p.lead_time or "")
         ws.cell(i, 15, value=venta_hd)
         ws.cell(i, 16, value=retail_hd)
-        ws.cell(i, 17, value=cot["margen_lloyds_real"])
+        # Fila 17 del HD = THD MARGIN = margen del retailer, calculado con
+        # la formula 1 - venta_hd / (retail/1.16). En decimal porque la celda
+        # tiene formato '0.00%' en llenar_formato_hd.py.
+        ws.cell(i, 17, value=cot["margen_cliente_pct"] / 100)
 
         # Foto: usar foto propia, o fallback al SKU base si la variante no tiene
         foto_path = _resolver_foto_path(p, base_fotos, db)
