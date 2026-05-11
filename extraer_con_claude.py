@@ -262,7 +262,7 @@ def extraer_con_claude(
     json_path: str,
     figures_dir: str,
     modelo: str = MODELO_DEFAULT,
-    max_tokens_salida: int = 8000,
+    max_tokens_salida: int = 32000,
     clasificar: bool = True,
 ) -> list[dict]:
     """
