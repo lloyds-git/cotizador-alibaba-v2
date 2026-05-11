@@ -98,9 +98,17 @@
             <td class="p-2 font-mono text-xs" x-text="p.sku || ''"></td>
             <td class="p-2 max-w-md text-xs" x-text="p.descripcion"></td>
             <td class="p-2" @click.stop>
-              <input type="text" :value="p.categoria || ''"
-                     @change="actualizarCategoria(p, $event.target.value)"
-                     class="border px-1 py-0.5 w-28 text-xs rounded">
+              <select :value="p.categoria || ''"
+                      @change="manejarCambioCategoria(p, $event.target)"
+                      class="border px-1 py-0.5 w-32 text-xs rounded bg-white">
+                <option value="">(sin)</option>
+                <template x-for="c in categorias" :key="c.categoria || '__nil__'">
+                  <option :value="c.categoria || ''"
+                          x-show="c.categoria !== null"
+                          x-text="c.categoria"></option>
+                </template>
+                <option value="__nueva__">+ Crear nueva...</option>
+              </select>
             </td>
             <td class="p-2 font-mono" x-text="p.fob_usd ? '$' + p.fob_usd.toFixed(2) : ''"></td>
             <td class="p-2 text-right text-xs" x-text="p.medidas || ''"></td>
@@ -284,6 +292,29 @@ function productosApp() {
       });
       await this.cargarCategorias();
       if (this.categoriaFiltro) await this.cargar();
+    },
+
+    async manejarCambioCategoria(p, select) {
+      const valor = select.value;
+      if (valor === '__nueva__') {
+        const nombre = prompt('Nombre de la nueva categoria (ej. comederos, juguetes-gato):');
+        // Revertir el select al valor previo si cancela
+        if (!nombre || !nombre.trim()) {
+          select.value = p.categoria || '';
+          return;
+        }
+        const limpia = nombre.trim().toLowerCase().replace(/\s+/g, '-');
+        // Avisar si ya existe
+        if (this.categorias.some(c => c.categoria === limpia)) {
+          if (!confirm(`La categoria '${limpia}' ya existe. ¿Asignarla de todas formas?`)) {
+            select.value = p.categoria || '';
+            return;
+          }
+        }
+        await this.actualizarCategoria(p, limpia);
+      } else {
+        await this.actualizarCategoria(p, valor);
+      }
     },
 
     async marcarVisibles(marcado) {
