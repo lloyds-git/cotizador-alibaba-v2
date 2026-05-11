@@ -522,14 +522,25 @@ def _snapshot_productos_exportados(
 ) -> int:
     """Crea un CotizacionSnapshot por cada producto en la query exportada.
 
-    Persiste los params actuales (TC, margenes, fletes, descuentos) en el
-    snapshot para que al re-abrir el producto la UI muestre los valores
-    con los que se exporto. NO sobrescribe snapshots previos.
+    Importante: preserva el retail_final_mxn del snapshot manual mas
+    reciente del producto. Asi exportar varias veces no pierde el retail
+    que el usuario edito explicitamente al guardar la cotizacion.
     """
     params = params or {}
     n = 0
     for p in productos_q.all():
         try:
+            # Buscar el retail editado mas reciente del producto (de cualquier
+            # snapshot previo). Sin esto, el auto-snapshot del export pisaria
+            # el retail editado del usuario con el paso 13 del motor.
+            ultimo_snap = (
+                db.query(CotizacionSnapshot)
+                .filter_by(producto_id=p.id)
+                .order_by(CotizacionSnapshot.creado_en.desc())
+                .first()
+            )
+            retail_preservado = ultimo_snap.retail_final_mxn if ultimo_snap else None
+
             _crear_snapshot(
                 db, p.id,
                 origen=origen,
@@ -543,6 +554,7 @@ def _snapshot_productos_exportados(
                 descuentos_na_pct=params.get("descuentos_na_pct"),
                 gasto_fijo_pct=params.get("gasto_fijo_pct"),
                 gastos_aduanales_pct=params.get("gastos_aduanales_pct"),
+                retail_final_mxn=retail_preservado,
             )
             n += 1
         except Exception:
