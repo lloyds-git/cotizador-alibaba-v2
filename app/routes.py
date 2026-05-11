@@ -156,6 +156,71 @@ def marcar_bulk(body: MarcarBulkBody, db: SesionDep):
     return {"ok": True, "afectados": n}
 
 
+@router.get("/api/productos/{producto_id}/cotizar")
+def cotizar_14_pasos(
+    producto_id: int,
+    db: SesionDep,
+    tc: float | None = Query(None, description="Tipo de cambio MXN/USD override"),
+    margen_nuestro: float | None = Query(None, description="Margen Lloyds (0-1)"),
+    margen_cliente: float | None = Query(None, description="Margen retailer (0-1)"),
+    flete_maritimo_usd: float | None = Query(None, description="Flete maritimo USD/contenedor"),
+    piezas: int | None = Query(None, description="Piezas/40HQ override"),
+):
+    """Devuelve los 14 pasos del motor de cotizacion para un producto."""
+    from app.cotizador.adapter import producto_a_row
+    from app.cotizador.engine import compute_for_row, STEP_LABELS
+
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+
+    row = producto_a_row(p)
+    res = compute_for_row(
+        row,
+        override_tc=tc,
+        override_piezas_contenedor=piezas,
+        override_flete_maritimo_usd=flete_maritimo_usd,
+        margen_nuestro_pct=margen_nuestro,
+        margen_cliente_pct=margen_cliente,
+    )
+
+    return {
+        "producto_id": producto_id,
+        "sku": p.sku,
+        "descripcion": p.descripcion,
+        "categoria": p.categoria,
+        "subcategoria": p.subcategoria,
+        "fob_usd": p.fob_usd,
+        "material": p.material,
+        "medidas": p.medidas,
+        "peso_kg": p.peso_kg,
+        "color": p.color,
+        "moq": p.moq,
+        "packing": p.packing,
+        "carton_dims": p.carton_dims,
+        "cbm": p.cbm,
+        "pzas_20ft": p.pzas_20ft,
+        "pzas_40hq": p.pzas_40hq,
+        "lead_time": p.lead_time,
+        "proveedor": p.proveedor.nombre if p.proveedor else None,
+        "fotos": [f.ruta_relativa for f in p.fotos],
+        "fraccion_arancelaria": res.fraccion_arancelaria,
+        "tasa_arancelaria_pct": str(res.tasa_arancelaria_pct),
+        "tipo_cambio": str(res.tipo_cambio),
+        "margen_nuestro": str(res.margen_nuestro_effective),
+        "margen_cliente": str(res.margen_cliente_effective),
+        "pasos": [
+            {
+                "n": i,
+                "label": STEP_LABELS[i - 1],
+                "valor": str(getattr(res, f"paso{i}")),
+            }
+            for i in range(1, 15)
+        ],
+        "warnings": res.warnings,
+    }
+
+
 @router.patch("/api/productos/{producto_id}")
 def actualizar(producto_id: int, body: ActualizarBody, db: SesionDep):
     p = db.get(Producto, producto_id)

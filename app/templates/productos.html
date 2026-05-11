@@ -8,11 +8,14 @@
       <label>Tipo cambio MXN:
         <input type="number" step="0.1" x-model.number="tc" class="border px-2 py-1 w-20 ml-1">
       </label>
-      <label>Factor importacion:
-        <input type="number" step="0.05" x-model.number="factor" class="border px-2 py-1 w-20 ml-1">
+      <label>Margen Lloyds:
+        <input type="number" step="0.05" x-model.number="margenNuestro" class="border px-2 py-1 w-20 ml-1">
       </label>
-      <label>Margen objetivo:
-        <input type="number" step="0.05" x-model.number="margen" class="border px-2 py-1 w-20 ml-1">
+      <label>Margen retailer:
+        <input type="number" step="0.05" x-model.number="margenCliente" class="border px-2 py-1 w-20 ml-1">
+      </label>
+      <label>Flete USD/40HQ:
+        <input type="number" step="100" x-model.number="fleteMaritimo" class="border px-2 py-1 w-24 ml-1">
       </label>
     </div>
 
@@ -62,72 +65,185 @@
       <span x-show="totalMarcados !== null"> &middot;
         <span x-text="totalMarcados"></span> marcados en total
       </span>
+      <span class="ml-3 text-gray-400">Click en una fila para ver el detalle y los 14 pasos</span>
     </div>
   </div>
 
   <!-- Tabla -->
-  <table class="bg-white w-full text-sm shadow rounded overflow-hidden">
-    <thead class="bg-gray-100 text-left">
-      <tr>
-        <th class="p-2">Foto</th>
-        <th class="p-2">SKU</th>
-        <th class="p-2">Descripcion</th>
-        <th class="p-2">Categoria</th>
-        <th class="p-2">FOB USD</th>
-        <th class="p-2">Landed MXN</th>
-        <th class="p-2">Retail MXN</th>
-        <th class="p-2">Margen %</th>
-        <th class="p-2 text-center">Cotizar</th>
-      </tr>
-    </thead>
-    <tbody>
-      <template x-for="p in productos" :key="p.id">
-        <tr class="border-t hover:bg-gray-50">
-          <td class="p-2">
-            <template x-if="p.fotos && p.fotos.length">
-              <img :src="'/' + p.fotos[0]" class="w-16 h-16 object-contain">
-            </template>
-          </td>
-          <td class="p-2 font-mono" x-text="p.sku || ''"></td>
-          <td class="p-2 max-w-md" x-text="p.descripcion"></td>
-          <td class="p-2">
-            <input type="text" :value="p.categoria || ''"
-                   @change="actualizarCategoria(p, $event.target.value)"
-                   class="border px-1 py-0.5 w-28 text-xs rounded">
-          </td>
-          <td class="p-2" x-text="p.fob_usd ? p.fob_usd.toFixed(2) : ''"></td>
-          <td class="p-2" x-text="((p.fob_usd || 0) * tc * factor).toFixed(2)"></td>
-          <td class="p-2" x-text="(((p.fob_usd || 0) * tc * factor / (1 - margen)) * 1.16).toFixed(0)"></td>
-          <td class="p-2" x-text="(margen * 100).toFixed(0) + '%'"></td>
-          <td class="p-2 text-center">
-            <input type="checkbox" :checked="p.marcado_cotizar"
-                   @change="toggleMarcar(p, $event.target.checked)">
-          </td>
+  <div :class="detalle ? 'mr-[480px] transition-all' : 'transition-all'">
+    <table class="bg-white w-full text-sm shadow rounded overflow-hidden">
+      <thead class="bg-gray-100 text-left">
+        <tr>
+          <th class="p-2">Foto</th>
+          <th class="p-2">SKU</th>
+          <th class="p-2">Descripcion</th>
+          <th class="p-2">Categoria</th>
+          <th class="p-2">FOB USD</th>
+          <th class="p-2 text-right">Medidas</th>
+          <th class="p-2 text-right">CBM</th>
+          <th class="p-2 text-right">Pzas/40HQ</th>
+          <th class="p-2 text-center">Cotizar</th>
         </tr>
-      </template>
-      <tr x-show="productos.length === 0">
-        <td colspan="9" class="p-4 text-center text-gray-500">No hay productos que coincidan.</td>
-      </tr>
-    </tbody>
-  </table>
+      </thead>
+      <tbody>
+        <template x-for="p in productos" :key="p.id">
+          <tr class="border-t hover:bg-blue-50 cursor-pointer"
+              :class="detalle && detalle.producto_id === p.id ? 'bg-blue-100' : ''"
+              @click="abrirDetalle(p, $event)">
+            <td class="p-2">
+              <template x-if="p.fotos && p.fotos.length">
+                <img :src="'/' + p.fotos[0]" class="w-16 h-16 object-contain">
+              </template>
+            </td>
+            <td class="p-2 font-mono text-xs" x-text="p.sku || ''"></td>
+            <td class="p-2 max-w-md text-xs" x-text="p.descripcion"></td>
+            <td class="p-2" @click.stop>
+              <input type="text" :value="p.categoria || ''"
+                     @change="actualizarCategoria(p, $event.target.value)"
+                     class="border px-1 py-0.5 w-28 text-xs rounded">
+            </td>
+            <td class="p-2 font-mono" x-text="p.fob_usd ? '$' + p.fob_usd.toFixed(2) : ''"></td>
+            <td class="p-2 text-right text-xs" x-text="p.medidas || ''"></td>
+            <td class="p-2 text-right" x-text="p.cbm ? p.cbm.toFixed(3) : ''"></td>
+            <td class="p-2 text-right" x-text="p.pzas_40hq || ''"></td>
+            <td class="p-2 text-center" @click.stop>
+              <input type="checkbox" :checked="p.marcado_cotizar"
+                     @change="toggleMarcar(p, $event.target.checked)">
+            </td>
+          </tr>
+        </template>
+        <tr x-show="productos.length === 0">
+          <td colspan="9" class="p-4 text-center text-gray-500">No hay productos que coincidan.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Panel lateral con detalle del producto + 14 pasos -->
+  <aside x-show="detalle"
+         x-transition:enter="transform transition ease-in-out duration-200"
+         x-transition:enter-start="translate-x-full"
+         x-transition:enter-end="translate-x-0"
+         x-transition:leave="transform transition ease-in-out duration-200"
+         x-transition:leave-start="translate-x-0"
+         x-transition:leave-end="translate-x-full"
+         class="fixed top-0 right-0 w-[480px] h-screen bg-white shadow-2xl border-l overflow-y-auto z-50"
+         style="display:none">
+
+    <template x-if="detalle">
+      <div class="p-4">
+        <!-- Header -->
+        <div class="flex justify-between items-start mb-3 pb-3 border-b">
+          <div>
+            <div class="font-bold text-lg" x-text="detalle.sku || '(sin SKU)'"></div>
+            <div class="text-xs text-gray-500" x-text="detalle.proveedor || ''"></div>
+            <div class="text-xs text-gray-500">
+              <span x-text="detalle.categoria || '(sin categoria)'"></span>
+              <span x-show="detalle.fraccion_arancelaria && detalle.fraccion_arancelaria !== '—'">
+                · Fracc <span x-text="detalle.fraccion_arancelaria"></span>
+                · Tasa <span x-text="parseFloat(detalle.tasa_arancelaria_pct).toFixed(0)"></span>%
+              </span>
+            </div>
+          </div>
+          <button type="button" @click="detalle = null"
+                  class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
+        </div>
+
+        <!-- Foto -->
+        <template x-if="detalle.fotos && detalle.fotos.length">
+          <div class="mb-3 flex justify-center bg-gray-50 rounded p-2">
+            <img :src="'/' + detalle.fotos[0]" class="max-h-48 object-contain">
+          </div>
+        </template>
+
+        <!-- Descripcion -->
+        <div class="mb-3">
+          <div class="text-xs text-gray-500 uppercase">Descripcion</div>
+          <div class="text-sm" x-text="detalle.descripcion"></div>
+        </div>
+
+        <!-- Datos del producto en 2 columnas -->
+        <div class="grid grid-cols-2 gap-2 text-xs mb-4">
+          <template x-for="(label, key) in {
+            material:'Material', medidas:'Medidas', peso_kg:'Peso (kg)',
+            color:'Color', moq:'MOQ', packing:'Packing',
+            carton_dims:'Carton dims', cbm:'CBM / caja',
+            pzas_20ft:'Pzas / 20ft', pzas_40hq:'Pzas / 40HQ',
+            lead_time:'Lead time', fob_usd:'FOB USD'
+          }">
+            <div class="bg-gray-50 px-2 py-1 rounded">
+              <div class="text-gray-500 uppercase text-[10px]" x-text="label"></div>
+              <div class="font-mono" x-text="(detalle[key] !== null && detalle[key] !== '' && detalle[key] !== undefined) ? detalle[key] : '—'"></div>
+            </div>
+          </template>
+        </div>
+
+        <!-- Warnings -->
+        <template x-if="detalle.warnings && detalle.warnings.length">
+          <div class="mb-3 bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs p-2 rounded">
+            <div class="font-semibold mb-1">Avisos del motor:</div>
+            <ul class="list-disc list-inside">
+              <template x-for="w in detalle.warnings"><li x-text="w"></li></template>
+            </ul>
+          </div>
+        </template>
+
+        <!-- 14 pasos -->
+        <div class="mb-2">
+          <div class="text-xs text-gray-500 uppercase mb-2 flex justify-between">
+            <span>Motor cotizacion (14 pasos)</span>
+            <span class="text-gray-400">
+              TC <span x-text="parseFloat(detalle.tipo_cambio).toFixed(2)"></span>
+              · Mn <span x-text="(parseFloat(detalle.margen_nuestro)*100).toFixed(0)"></span>%
+              · Mc <span x-text="(parseFloat(detalle.margen_cliente)*100).toFixed(0)"></span>%
+            </span>
+          </div>
+          <table class="w-full text-xs">
+            <tbody>
+              <template x-for="paso in detalle.pasos" :key="paso.n">
+                <tr class="border-b last:border-0"
+                    :class="[paso.n === 9 ? 'bg-blue-50 font-semibold' : '',
+                             paso.n === 13 ? 'bg-green-50 font-semibold' : '',
+                             paso.n === 14 ? 'bg-green-100 font-bold' : '']">
+                  <td class="py-1 pr-2 text-right text-gray-400 w-6" x-text="paso.n"></td>
+                  <td class="py-1 pr-2" x-text="paso.label"></td>
+                  <td class="py-1 text-right font-mono" x-text="formatearValor(paso.valor)"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+          <div class="mt-2 text-[10px] text-gray-400">
+            Paso 9 = landed cost MXN/pieza · Paso 13 = publico c/IVA · Paso 14 = redondeo psicologico
+          </div>
+        </div>
+      </div>
+    </template>
+  </aside>
 </div>
 
 <script>
 function productosApp() {
   return {
     tc: 20.0,
-    factor: 1.4,
-    margen: 0.40,
+    margenNuestro: 0.15,
+    margenCliente: 0.40,
+    fleteMaritimo: 5000,
     q: '',
     categoriaFiltro: '',
     soloMarcados: false,
     productos: [],
     categorias: [],
     totalMarcados: null,
+    detalle: null,
 
     async init() {
       await this.cargarCategorias();
       await this.cargar();
+      // Re-cargar detalle si cambian parametros y hay uno abierto
+      this.$watch('tc', () => this.refrescarDetalle());
+      this.$watch('margenNuestro', () => this.refrescarDetalle());
+      this.$watch('margenCliente', () => this.refrescarDetalle());
+      this.$watch('fleteMaritimo', () => this.refrescarDetalle());
     },
 
     async cargarCategorias() {
@@ -167,7 +283,6 @@ function productosApp() {
         body: JSON.stringify({ categoria: v }),
       });
       await this.cargarCategorias();
-      // si hay filtro de categoria activo, recargar para que se vaya/llegue
       if (this.categoriaFiltro) await this.cargar();
     },
 
@@ -183,13 +298,44 @@ function productosApp() {
       await this.cargarCategorias();
     },
 
+    async abrirDetalle(p, event) {
+      // Si click viene de un input/checkbox, no abrir
+      if (event && event.target && ['INPUT','BUTTON','A','SELECT'].includes(event.target.tagName)) return;
+      await this.cargarDetalle(p.id);
+    },
+
+    async cargarDetalle(producto_id) {
+      const params = new URLSearchParams();
+      params.set('tc', this.tc);
+      params.set('margen_nuestro', this.margenNuestro);
+      params.set('margen_cliente', this.margenCliente);
+      params.set('flete_maritimo_usd', this.fleteMaritimo);
+      const r = await fetch(`/api/productos/${producto_id}/cotizar?` + params.toString());
+      if (!r.ok) {
+        alert('Error cargando detalle: ' + r.status);
+        return;
+      }
+      this.detalle = await r.json();
+    },
+
+    refrescarDetalle() {
+      if (this.detalle) this.cargarDetalle(this.detalle.producto_id);
+    },
+
     exportarCategoria() {
       if (!this.categoriaFiltro) {
         alert('Selecciona una categoria primero.');
         return;
       }
-      // El backend exporta filtrando por categoria, sin tocar el estado de marcas.
       window.location.href = '/exportar/' + encodeURIComponent(this.categoriaFiltro);
+    },
+
+    formatearValor(v) {
+      if (v === null || v === undefined || v === '') return '';
+      const n = parseFloat(v);
+      if (isNaN(n)) return v;
+      if (Math.abs(n) >= 1000) return n.toLocaleString('es-MX', {maximumFractionDigits: 2});
+      return n.toFixed(4).replace(/\.?0+$/, '');
     },
   };
 }
