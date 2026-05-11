@@ -83,17 +83,33 @@ def _margen_hd(retail_civa: float, venta_hd: float) -> float:
     return 1 - venta_hd / retail_siva
 
 
-def _cotizar_producto(producto: Producto, fob_efectivo: float, db: Session) -> dict:
-    """Devuelve los datos de cotizacion para exportar. Si el producto tiene
-    al menos un snapshot guardado, usa el MAS RECIENTE (retail editado del
-    usuario, margen real persistido). Si no, corre el motor 14 pasos con
-    defaults.
+def _cotizar_producto(
+    producto: Producto,
+    fob_efectivo: float,
+    db: Session,
+    *,
+    params: dict | None = None,
+) -> dict:
+    """Devuelve los datos de cotizacion para exportar.
+
+    Resolucion de fuente:
+      1. Si el producto tiene snapshot guardado mas reciente, se usa para
+         retail/venta y los settings persistidos del snapshot.
+      2. Si no hay snapshot, corre el motor con los `params` recibidos
+         (TC, margenes, flete, descuentos de la barra superior del UI).
 
     Margen HD en los exports SIEMPRE se recalcula con la formula:
         margen_hd = 1 - venta_hd / (retail_civa / 1.16)
     asi refleja el margen real del retailer aun cuando el retail haya sido
     movido manualmente.
+
+    Args:
+        params: dict opcional con keys tc, margen_nuestro_pct,
+            margen_cliente_pct, flete_maritimo_usd, flete_local_mxn,
+            descuentos_pct, descuentos_na_pct, gasto_fijo_pct,
+            gastos_aduanales_pct. Cualquier subset.
     """
+    params = params or {}
     base = {
         "fob_efectivo_usd": fob_efectivo,
         "piezas_contenedor": 0,
@@ -114,15 +130,65 @@ def _cotizar_producto(producto: Producto, fob_efectivo: float, db: Session) -> d
         from app.cotizador.lookup import resolver_arancel
         from app.cotizador.defaults import country_params
 
+        # Buscar snapshot mas reciente
+        snap = (
+            db.query(CotizacionSnapshot)
+            .filter_by(producto_id=producto.id)
+            .order_by(CotizacionSnapshot.creado_en.desc())
+            .first()
+        )
+
+        # Settings y overrides para el motor.
+        # Si hay snapshot, sus params toman precedencia sobre params de barra.
+        snap_params = {}
+        if snap:
+            snap_params = {
+                "tc": snap.tc,
+                "margen_nuestro_pct": snap.margen_nuestro_pct,
+                "margen_cliente_pct": snap.margen_cliente_pct,
+                "flete_maritimo_usd": snap.flete_maritimo_usd,
+                "flete_local_mxn": snap.flete_local_mxn,
+                "descuentos_pct": snap.descuentos_pct,
+                "descuentos_na_pct": snap.descuentos_na_pct,
+                "gasto_fijo_pct": snap.gasto_fijo_pct,
+                "gastos_aduanales_pct": snap.gastos_aduanales_pct,
+            }
+
+        # Resolver cada param: snapshot > params barra > None (engine usa default)
+        def pick(k: str):
+            v = snap_params.get(k)
+            if v is not None:
+                return v
+            return params.get(k)
+
+        settings: dict = {}
+        if pick("flete_local_mxn") is not None:
+            settings["flete_local_mxn"] = pick("flete_local_mxn")
+        else:
+            settings["flete_local_mxn"] = 70000
+        if pick("descuentos_pct") is not None:
+            settings["descuentos_pct"] = pick("descuentos_pct")
+        if pick("descuentos_na_pct") is not None:
+            settings["descuentos_na_pct"] = pick("descuentos_na_pct")
+        if pick("gasto_fijo_pct") is not None:
+            settings["gasto_fijo_pct"] = pick("gasto_fijo_pct")
+        if pick("gastos_aduanales_pct") is not None:
+            settings["gastos_aduanales_pct"] = pick("gastos_aduanales_pct")
+
         row = producto_a_row(producto)
         row["unit_price"] = fob_efectivo
         arancel = resolver_arancel(db, producto.categoria, producto.subcategoria, producto.material)
-        settings = {"flete_local_mxn": 70000}
+
         res = compute_for_row(
             row,
             settings=settings,
             override_tasa_pct=arancel.tasa_pct,
+            override_tc=pick("tc"),
+            override_flete_maritimo_usd=pick("flete_maritimo_usd"),
+            margen_nuestro_pct=pick("margen_nuestro_pct"),
+            margen_cliente_pct=pick("margen_cliente_pct"),
         )
+
         landed = float(res.paso9)
         venta_motor = float(res.paso11)
         retail_motor = float(res.paso13)
@@ -137,20 +203,14 @@ def _cotizar_producto(producto: Producto, fob_efectivo: float, db: Session) -> d
             "retail_redondeado_mxn": retail_redondeado,
         })
 
-        # Buscar el snapshot mas reciente del producto
-        snap = (
-            db.query(CotizacionSnapshot)
-            .filter_by(producto_id=producto.id)
-            .order_by(CotizacionSnapshot.creado_en.desc())
-            .first()
-        )
-
         if snap and snap.retail_final_mxn and snap.retail_final_mxn > 0:
+            # Retail viene del snapshot (editado manualmente), venta tambien
             retail_civa = float(snap.retail_final_mxn)
             venta_hd = float(snap.venta_lloyds_mxn or venta_motor)
             margen_lloyds = float(snap.margen_real_pct or 0) / 100
             base["fuente"] = "snapshot"
         else:
+            # Sin snapshot: usar motor corrido con params actuales
             retail_civa = retail_motor
             venta_hd = venta_motor
             cp = country_params(res.country_code, settings=settings)
@@ -175,6 +235,7 @@ def _construir_xlsx_intermedio(
     xlsx_intermedio: str,
     base_fotos: str,
     db: Session,
+    params: dict | None = None,
 ) -> int:
     """Logica compartida que dado una lista de Producto construye el xlsx."""
 
@@ -201,8 +262,8 @@ def _construir_xlsx_intermedio(
         suma_costos = sum(c.monto_usd for c in costos)
         fob_efectivo = (p.fob_usd or 0) + suma_costos
 
-        # Cotizacion via motor 14 pasos
-        cot = _cotizar_producto(p, fob_efectivo, db)
+        # Cotizacion via motor 14 pasos (snapshot > params barra > defaults)
+        cot = _cotizar_producto(p, fob_efectivo, db, params=params)
 
         # Costo HD = paso 11 (venta a HD MXN sin IVA), redondeado al entero
         venta_hd = round(cot["venta_hd_mxn"]) if cot["venta_hd_mxn"] > 0 else 0
@@ -250,6 +311,7 @@ def generar_formato_hd_desde_marcados(
     session: Session,
     xlsx_intermedio: str,
     base_fotos: str,
+    params: dict | None = None,
 ) -> int:
     """Construye xlsx intermedio con productos marcado_cotizar=True."""
     productos = (
@@ -257,7 +319,7 @@ def generar_formato_hd_desde_marcados(
         .filter(Producto.marcado_cotizar.is_(True))
         .all()
     )
-    return _construir_xlsx_intermedio(productos, xlsx_intermedio, base_fotos, session)
+    return _construir_xlsx_intermedio(productos, xlsx_intermedio, base_fotos, session, params=params)
 
 
 def generar_formato_hd_por_categoria(
@@ -265,6 +327,7 @@ def generar_formato_hd_por_categoria(
     xlsx_intermedio: str,
     base_fotos: str,
     categoria: str | None,
+    params: dict | None = None,
 ) -> int:
     """Construye xlsx intermedio filtrando por categoria, sin tocar marcas.
 
@@ -276,7 +339,7 @@ def generar_formato_hd_por_categoria(
     else:
         q = q.filter(Producto.categoria == categoria)
     productos = q.all()
-    return _construir_xlsx_intermedio(productos, xlsx_intermedio, base_fotos, session)
+    return _construir_xlsx_intermedio(productos, xlsx_intermedio, base_fotos, session, params=params)
 
 
 # ============================================================
@@ -321,6 +384,7 @@ def generar_export_interno_marcados(
     session: Session,
     xlsx_salida: str,
     base_fotos: str,
+    params: dict | None = None,
 ) -> int:
     """Genera un xlsx vertical para uso interno con TODAS las columnas por
     producto marcado. Una fila por producto, headers en A1..AC1.
@@ -361,7 +425,7 @@ def generar_export_interno_marcados(
         suma_costos = sum(c.monto_usd for c in costos)
         fob_original = p.fob_usd or 0
         fob_efectivo = fob_original + suma_costos
-        cot = _cotizar_producto(p, fob_efectivo, session)
+        cot = _cotizar_producto(p, fob_efectivo, session, params=params)
 
         # Fila i
         ws.cell(i, 2, value=p.sku or "")

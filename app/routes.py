@@ -423,12 +423,16 @@ def _correr_llenar_formato_hd(
     xlsx_int: Path,
     salida: Path,
     categoria: str | None = "__usar_marcados__",
+    params: dict | None = None,
 ) -> Path:
     """Genera intermedio (por marcas o por categoria) + corre llenar_formato_hd.py.
 
     Si categoria == '__usar_marcados__' (default): filtra por marcado_cotizar=True.
     Si categoria es None: filtra productos sin categoria.
     Si categoria es str: filtra por esa categoria.
+
+    `params` se pasa a _cotizar_producto como fallback cuando un producto no
+    tiene snapshot guardado: TC, margenes, fletes, descuentos de la barra UI.
 
     Devuelve la ruta del archivo HD producido. Lanza HTTPException en error.
     """
@@ -445,6 +449,7 @@ def _correr_llenar_formato_hd(
             session=db,
             xlsx_intermedio=str(xlsx_int),
             base_fotos=str(proyecto / "data"),
+            params=params,
         )
         if n == 0:
             raise HTTPException(400, "No hay productos marcados.")
@@ -454,6 +459,7 @@ def _correr_llenar_formato_hd(
             xlsx_intermedio=str(xlsx_int),
             base_fotos=str(proyecto / "data"),
             categoria=categoria,
+            params=params,
         )
         if n == 0:
             raise HTTPException(404, f"No hay productos en categoria {categoria!r}.")
@@ -534,13 +540,46 @@ def _snapshot_productos_exportados(
     return n
 
 
+def _params_exportar(
+    tc: float | None = Query(None),
+    margen_nuestro_pct: float | None = Query(None, description="Escala 0-100"),
+    margen_cliente_pct: float | None = Query(None, description="Escala 0-100"),
+    flete_maritimo_usd: float | None = Query(None),
+    flete_local_mxn: float | None = Query(None),
+    descuentos_pct: float | None = Query(None),
+    descuentos_na_pct: float | None = Query(None),
+    gasto_fijo_pct: float | None = Query(None),
+    gastos_aduanales_pct: float | None = Query(None),
+) -> dict:
+    """Recolecta params del query string como fallback del snapshot.
+
+    Se inyecta como dependencia via Depends() en los endpoints de export.
+    Solo incluye claves con valor != None para no pisar defaults.
+    """
+    raw = {
+        "tc": tc,
+        "margen_nuestro_pct": margen_nuestro_pct,
+        "margen_cliente_pct": margen_cliente_pct,
+        "flete_maritimo_usd": flete_maritimo_usd,
+        "flete_local_mxn": flete_local_mxn,
+        "descuentos_pct": descuentos_pct,
+        "descuentos_na_pct": descuentos_na_pct,
+        "gasto_fijo_pct": gasto_fijo_pct,
+        "gastos_aduanales_pct": gastos_aduanales_pct,
+    }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
 @router.get("/exportar")
-def exportar(db: SesionDep):
+def exportar(
+    db: SesionDep,
+    params: dict = Depends(_params_exportar),
+):
     """Genera HD desde la seleccion actual (compatibilidad)."""
     proyecto = Path(__file__).parent.parent
     xlsx_int = proyecto / "_intermedio_seleccion.xlsx"
     salida = proyecto / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
-    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida)
+    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida, params=params)
     # Snapshot por cada producto marcado
     _snapshot_productos_exportados(
         db,
@@ -552,7 +591,10 @@ def exportar(db: SesionDep):
 
 
 @router.get("/exportar-interno")
-def exportar_interno(db: SesionDep):
+def exportar_interno(
+    db: SesionDep,
+    params: dict = Depends(_params_exportar),
+):
     """Genera xlsx vertical con TODAS las columnas (foto, FOB, costos, arancel,
     landing, venta HD, retail, margenes) de los productos marcados. Uso interno.
     """
@@ -574,6 +616,7 @@ def exportar_interno(db: SesionDep):
         session=db,
         xlsx_salida=str(salida),
         base_fotos=str(proyecto / "data"),
+        params=params,
     )
     if n == 0:
         raise HTTPException(400, "No hay productos marcados.")
@@ -588,7 +631,11 @@ def exportar_interno(db: SesionDep):
 
 
 @router.get("/exportar/{categoria}")
-def exportar_categoria(categoria: str, db: SesionDep):
+def exportar_categoria(
+    categoria: str,
+    db: SesionDep,
+    params: dict = Depends(_params_exportar),
+):
     """Genera HD para una categoria sin tocar el estado de marcas.
 
     Si categoria == '__sin_categoria__', exporta productos sin categoria.
@@ -609,7 +656,7 @@ def exportar_categoria(categoria: str, db: SesionDep):
 
     # Pasamos categoria=None si el cliente uso el sentinela __sin_categoria__
     cat_filter = None if categoria == SIN_CATEGORIA else categoria
-    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida, categoria=cat_filter)
+    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida, categoria=cat_filter, params=params)
     # Snapshot por cada producto exportado en la categoria
     _snapshot_productos_exportados(
         db,

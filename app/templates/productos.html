@@ -82,20 +82,20 @@
               :title="categoriaFiltro ? 'Exportar categoria ' + categoriaFiltro : 'Selecciona una categoria para exportar por categoria'">
         Exportar categoria
       </button>
-      <a href="/exportar"
-         class="bg-green-700 hover:bg-green-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
-         title="Genera el formato HD-Mascotas para enviar al cliente">
+      <button type="button" @click="exportarHD()"
+              class="bg-green-700 hover:bg-green-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
+              title="Genera el formato HD-Mascotas para enviar al cliente (usa parametros actuales)">
         Exportar HD
         <span class="bg-white text-green-800 text-xs font-bold px-2 py-0.5 rounded-full"
               x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
-      </a>
-      <a href="/exportar-interno"
-         class="bg-purple-700 hover:bg-purple-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
-         title="Genera xlsx vertical con todas las columnas (uso interno)">
+      </button>
+      <button type="button" @click="exportarInterno()"
+              class="bg-purple-700 hover:bg-purple-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
+              title="Genera xlsx vertical con todas las columnas (uso interno, usa parametros actuales)">
         Export interno
         <span class="bg-white text-purple-800 text-xs font-bold px-2 py-0.5 rounded-full"
               x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
-      </a>
+      </button>
     </div>
 
     <div class="mt-2 text-xs text-gray-600 flex items-center gap-3">
@@ -813,12 +813,37 @@ function productosApp() {
       await this.cargarSnapshots();
     },
 
+    paramsActuales() {
+      // Devuelve los params de la barra superior en formato query string
+      // que el backend espera (margenes en escala 0-100, no 0-1).
+      const p = new URLSearchParams();
+      p.set('tc', this.tc);
+      p.set('margen_nuestro_pct', this.margenNuestro * 100);
+      p.set('margen_cliente_pct', this.margenCliente * 100);
+      p.set('flete_maritimo_usd', this.fleteMaritimo);
+      p.set('flete_local_mxn', this.fleteLocal);
+      p.set('descuentos_pct', this.descuentosPct);
+      p.set('descuentos_na_pct', this.descuentosNaPct);
+      p.set('gasto_fijo_pct', this.gastoFijoPct);
+      p.set('gastos_aduanales_pct', this.gastosAduanalesPct);
+      return p.toString();
+    },
+
+    exportarHD() {
+      window.location.href = '/exportar?' + this.paramsActuales();
+    },
+
+    exportarInterno() {
+      window.location.href = '/exportar-interno?' + this.paramsActuales();
+    },
+
     exportarCategoria() {
       if (!this.categoriaFiltro) {
         alert('Selecciona una categoria primero.');
         return;
       }
-      window.location.href = '/exportar/' + encodeURIComponent(this.categoriaFiltro);
+      window.location.href = '/exportar/' + encodeURIComponent(this.categoriaFiltro)
+        + '?' + this.paramsActuales();
     },
 
     formatearValor(v) {
