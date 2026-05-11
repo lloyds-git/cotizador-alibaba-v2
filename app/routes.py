@@ -480,7 +480,12 @@ def _correr_llenar_formato_hd(
     result = subprocess.run(
         [
             _sys.executable, str(script), str(xlsx_int), str(formato),
-            "--mapeo", "C=8,K=11,N=16,O=17", "--yes",
+            # Mapeo correcto al HD destino:
+            #   col C (Descripcion) -> fila 8 (DESCRIPTION)
+            #   col O (FOB USD)     -> fila 11 (DOMESTIC COST)
+            # Las filas 16 (suggested retail) y 17 (margin formula) las llena
+            # Excel via formulas; aqui no se mapean desde el intermedio.
+            "--mapeo", "C=8,O=11", "--yes",
         ],
         capture_output=True, text=True, cwd=str(proyecto),
         stdin=subprocess.DEVNULL,

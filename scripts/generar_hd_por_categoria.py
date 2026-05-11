@@ -64,7 +64,9 @@ def generar_para_categoria(session, categoria: str | None) -> dict:
     formato = ROOT / "Formato HD-Mascotas.xlsb"
     cmd = [
         sys.executable, str(script), str(xlsx_int), str(formato),
-        "--mapeo", "C=8,K=11,N=16,O=17",
+        # Col C (Descripcion) -> fila 8 (DESCRIPTION del HD)
+        # Col O (FOB USD)     -> fila 11 (DOMESTIC COST del HD)
+        "--mapeo", "C=8,O=11", "--yes",
     ]
     res = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT), timeout=300)
 
