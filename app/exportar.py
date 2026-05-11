@@ -293,8 +293,10 @@ def _construir_xlsx_intermedio(
         ws.cell(i, 16, value=retail_hd)
         # Fila 17 del HD = THD MARGIN = margen del retailer, calculado con
         # la formula 1 - venta_hd / (retail/1.16). En decimal porque la celda
-        # tiene formato '0.00%' en llenar_formato_hd.py.
-        ws.cell(i, 17, value=cot["margen_cliente_pct"] / 100)
+        # tiene formato '0.00%' en llenar_formato_hd.py. Redondeamos a 4
+        # decimales (= 2 decimales de %) para que Excel no muestre 40% en
+        # vez de 40.00% cuando el valor es muy cercano a un entero.
+        ws.cell(i, 17, value=round(cot["margen_cliente_pct"] / 100, 4))
 
         # Foto: usar foto propia, o fallback al SKU base si la variante no tiene
         foto_path = _resolver_foto_path(p, base_fotos, db)
@@ -453,15 +455,18 @@ def generar_export_interno_marcados(
         ws.cell(i, 18, value=fob_original)
         ws.cell(i, 19, value=suma_costos)
         ws.cell(i, 20, value=fob_efectivo)
+        # Porcentajes: redondear a 2 decimales antes de escribir para que
+        # Excel no muestre 40% en vez de 40.00% cuando el valor es muy cercano
+        # a un entero (39.9998... -> 40.00 limpio).
         ws.cell(i, 21, value=cot["fraccion"])
-        ws.cell(i, 22, value=cot["tasa_arancelaria_pct"])
+        ws.cell(i, 22, value=round(cot["tasa_arancelaria_pct"], 2))
         ws.cell(i, 23, value=cot["tipo_cambio"])
-        ws.cell(i, 24, value=cot["landed_unit_mxn"])
+        ws.cell(i, 24, value=round(cot["landed_unit_mxn"], 2))
         ws.cell(i, 25, value=round(cot["venta_hd_mxn"]) if cot["venta_hd_mxn"] > 0 else 0)
-        ws.cell(i, 26, value=cot["margen_lloyds_real"] * 100)
-        ws.cell(i, 27, value=cot["retail_civa_mxn"])
+        ws.cell(i, 26, value=round(cot["margen_lloyds_real"] * 100, 2))
+        ws.cell(i, 27, value=round(cot["retail_civa_mxn"], 2))
         ws.cell(i, 28, value=round(cot["retail_civa_mxn"]) if cot["retail_civa_mxn"] > 0 else 0)
-        ws.cell(i, 29, value=cot["margen_cliente_pct"])
+        ws.cell(i, 29, value=round(cot["margen_cliente_pct"], 2))
 
         # Formato moneda y porcentaje
         for col in [18, 19, 20]:
