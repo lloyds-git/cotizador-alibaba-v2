@@ -85,3 +85,31 @@ def test_seat_cover_a_transporte():
 
 def test_air_box_a_transporte():
     assert clasificar_descripcion("Pet air box Large") == "transporte"
+
+
+def test_descripcion_muy_corta_se_descarta():
+    assert clasificar_descripcion("box 0.94 1") == "_descartar"
+    assert clasificar_descripcion("710 box 1") == "_descartar"
+
+
+def test_fragmento_pricing_se_descarta():
+    assert clasificar_descripcion("Sticker label+0.01USD opp bag+0.01USD") == "_descartar"
+    assert clasificar_descripcion("Foam bag need to add 0.15USD") == "_descartar"
+    assert clasificar_descripcion("FOB Ningbo price for full container") == "_descartar"
+    assert clasificar_descripcion("VIP price is for full container load") == "_descartar"
+
+
+def test_stand_bowl_a_alimentadores():
+    assert clasificar_descripcion("Cat-ear high stand bowl ceramic") == "alimentadores"
+
+
+def test_feeding_table_a_alimentadores():
+    assert clasificar_descripcion("PB007-S Stainless Steel Pet feeding table") == "alimentadores"
+
+
+def test_catnip_a_juguetes():
+    assert clasificar_descripcion("Strawberry catnip toy with feather") == "juguetes"
+
+
+def test_travel_bottle_a_transporte():
+    assert clasificar_descripcion("Pet outdoor travel bottle 500ml") == "transporte"

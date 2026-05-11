@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import get_session_factory
-from app.exportar import generar_formato_hd_desde_marcados
+from app.exportar import generar_formato_hd_por_categoria
 from app.modelos import Producto
 
 
@@ -31,18 +31,12 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def generar_para_categoria(session, categoria: str | None) -> dict:
-    """Marca productos de la categoria, genera intermedio y HD."""
-    # Limpiar marcas
-    session.query(Producto).update({Producto.marcado_cotizar: False})
+    """Genera intermedio y HD para una categoria, sin tocar marcas existentes."""
+    # Contar productos en esta categoria
     if categoria is None:
-        n = session.query(Producto).filter(Producto.categoria.is_(None)).update(
-            {Producto.marcado_cotizar: True}, synchronize_session=False
-        )
+        n = session.query(Producto).filter(Producto.categoria.is_(None)).count()
     else:
-        n = session.query(Producto).filter(Producto.categoria == categoria).update(
-            {Producto.marcado_cotizar: True}, synchronize_session=False
-        )
-    session.commit()
+        n = session.query(Producto).filter(Producto.categoria == categoria).count()
 
     if n == 0:
         return {"categoria": categoria, "n": 0, "intermedio": None, "hd": None, "error": "vacio"}
@@ -59,10 +53,11 @@ def generar_para_categoria(session, categoria: str | None) -> dict:
         except Exception:
             pass
 
-    n_exp = generar_formato_hd_desde_marcados(
+    n_exp = generar_formato_hd_por_categoria(
         session=session,
         xlsx_intermedio=str(xlsx_int),
         base_fotos=str(ROOT / "data"),
+        categoria=categoria,
     )
 
     script = ROOT / "llenar_formato_hd.py"
@@ -92,6 +87,8 @@ def main():
     ap.add_argument("--solo", help="Lista comma-separated de categorias a procesar")
     ap.add_argument("--incluir-sin-categoria", action="store_true",
                     help="Generar tambien HD para productos sin categoria")
+    ap.add_argument("--incluir-descartar", action="store_true",
+                    help="Generar HD para categoria _descartar (fragmentos basura)")
     args = ap.parse_args()
 
     Session = get_session_factory()
@@ -106,6 +103,10 @@ def main():
     # Decidir si incluir None
     if None in cats and not args.incluir_sin_categoria:
         cats = [c for c in cats if c is not None]
+
+    # Excluir _descartar por defecto
+    if not args.incluir_descartar:
+        cats = [c for c in cats if c != "_descartar"]
 
     cats.sort(key=lambda c: (c is None, c or ""))
 

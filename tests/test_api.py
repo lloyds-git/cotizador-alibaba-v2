@@ -163,3 +163,28 @@ def test_marcar_bulk_vacio(cliente, productos_demo):
 def test_exportar_categoria_inexistente_404(cliente, productos_demo):
     r = cliente.get("/exportar/no-existe-cat")
     assert r.status_code == 404
+
+
+def test_generar_por_categoria_no_modifica_marcas(productos_demo, db_session, tmp_path):
+    """generar_formato_hd_por_categoria filtra sin tocar marcado_cotizar."""
+    from app.exportar import generar_formato_hd_por_categoria
+
+    # Pre-marcar algunos productos
+    prods = db_session.query(Producto).all()
+    for p in prods[:2]:
+        p.marcado_cotizar = True
+    db_session.commit()
+    marcas_antes = {p.id: p.marcado_cotizar for p in db_session.query(Producto).all()}
+
+    xlsx = tmp_path / "salida.xlsx"
+    n = generar_formato_hd_por_categoria(
+        session=db_session,
+        xlsx_intermedio=str(xlsx),
+        base_fotos=str(tmp_path),
+        categoria="casa-jaula",
+    )
+    assert n == 2  # productos_demo tiene 2 de casa-jaula
+    assert xlsx.exists()
+
+    marcas_despues = {p.id: p.marcado_cotizar for p in db_session.query(Producto).all()}
+    assert marcas_antes == marcas_despues

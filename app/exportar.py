@@ -15,22 +15,12 @@ from sqlalchemy.orm import Session
 from app.modelos import Producto
 
 
-def generar_formato_hd_desde_marcados(
-    session: Session,
+def _construir_xlsx_intermedio(
+    productos: list,
     xlsx_intermedio: str,
     base_fotos: str,
 ) -> int:
-    """
-    Construye un xlsx intermedio (mismo layout que pdf_a_formato_hd.py)
-    con todos los productos marcados_cotizar=True.
-
-    Devuelve la cantidad de productos exportados.
-    """
-    productos = (
-        session.query(Producto)
-        .filter(Producto.marcado_cotizar.is_(True))
-        .all()
-    )
+    """Logica compartida que dado una lista de Producto construye el xlsx."""
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -76,3 +66,36 @@ def generar_formato_hd_desde_marcados(
     Path(xlsx_intermedio).parent.mkdir(parents=True, exist_ok=True)
     wb.save(xlsx_intermedio)
     return len(productos)
+
+
+def generar_formato_hd_desde_marcados(
+    session: Session,
+    xlsx_intermedio: str,
+    base_fotos: str,
+) -> int:
+    """Construye xlsx intermedio con productos marcado_cotizar=True."""
+    productos = (
+        session.query(Producto)
+        .filter(Producto.marcado_cotizar.is_(True))
+        .all()
+    )
+    return _construir_xlsx_intermedio(productos, xlsx_intermedio, base_fotos)
+
+
+def generar_formato_hd_por_categoria(
+    session: Session,
+    xlsx_intermedio: str,
+    base_fotos: str,
+    categoria: str | None,
+) -> int:
+    """Construye xlsx intermedio filtrando por categoria, sin tocar marcas.
+
+    Si categoria es None, exporta los productos sin categoria.
+    """
+    q = session.query(Producto)
+    if categoria is None:
+        q = q.filter(Producto.categoria.is_(None))
+    else:
+        q = q.filter(Producto.categoria == categoria)
+    productos = q.all()
+    return _construir_xlsx_intermedio(productos, xlsx_intermedio, base_fotos)

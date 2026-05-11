@@ -208,23 +208,41 @@ def _correr_llenar_formato_hd(
     db: Session,
     xlsx_int: Path,
     salida: Path,
+    categoria: str | None = "__usar_marcados__",
 ) -> Path:
-    """Genera intermedio desde marcados + corre llenar_formato_hd.py.
+    """Genera intermedio (por marcas o por categoria) + corre llenar_formato_hd.py.
+
+    Si categoria == '__usar_marcados__' (default): filtra por marcado_cotizar=True.
+    Si categoria es None: filtra productos sin categoria.
+    Si categoria es str: filtra por esa categoria.
 
     Devuelve la ruta del archivo HD producido. Lanza HTTPException en error.
     """
     import subprocess
     import sys as _sys
-    from app.exportar import generar_formato_hd_desde_marcados
+    from app.exportar import (
+        generar_formato_hd_desde_marcados,
+        generar_formato_hd_por_categoria,
+    )
 
     proyecto = Path(__file__).parent.parent
-    n = generar_formato_hd_desde_marcados(
-        session=db,
-        xlsx_intermedio=str(xlsx_int),
-        base_fotos=str(proyecto / "data"),
-    )
-    if n == 0:
-        raise HTTPException(400, "No hay productos marcados.")
+    if categoria == "__usar_marcados__":
+        n = generar_formato_hd_desde_marcados(
+            session=db,
+            xlsx_intermedio=str(xlsx_int),
+            base_fotos=str(proyecto / "data"),
+        )
+        if n == 0:
+            raise HTTPException(400, "No hay productos marcados.")
+    else:
+        n = generar_formato_hd_por_categoria(
+            session=db,
+            xlsx_intermedio=str(xlsx_int),
+            base_fotos=str(proyecto / "data"),
+            categoria=categoria,
+        )
+        if n == 0:
+            raise HTTPException(404, f"No hay productos en categoria {categoria!r}.")
 
     formato = proyecto / "Formato HD-Mascotas.xlsb"
     script = proyecto / "llenar_formato_hd.py"
@@ -274,24 +292,17 @@ def exportar(db: SesionDep):
 
 @router.get("/exportar/{categoria}")
 def exportar_categoria(categoria: str, db: SesionDep):
-    """Genera HD para una categoria. Marca todos los productos de esa categoria,
-    desmarca el resto, ejecuta el pipeline y devuelve el archivo.
+    """Genera HD para una categoria sin tocar el estado de marcas.
+
+    Si categoria == '__sin_categoria__', exporta productos sin categoria.
     """
     proyecto = Path(__file__).parent.parent
 
     # Validar que la categoria existe (con productos)
-    q = db.query(Producto)
-    q = _aplicar_filtro_categoria(q, categoria)
+    q = _aplicar_filtro_categoria(db.query(Producto), categoria)
     n_en_cat = q.count()
     if n_en_cat == 0:
         raise HTTPException(404, f"Categoria '{categoria}' no tiene productos.")
-
-    # Reset de marcas y marcar solo la categoria
-    db.query(Producto).update({Producto.marcado_cotizar: False}, synchronize_session=False)
-    _aplicar_filtro_categoria(db.query(Producto), categoria).update(
-        {Producto.marcado_cotizar: True}, synchronize_session=False
-    )
-    db.commit()
 
     # Nombre con fecha del dia (no del correo origen, como dice el plan)
     cat_slug = "sin-categoria" if categoria == SIN_CATEGORIA else categoria
@@ -299,5 +310,7 @@ def exportar_categoria(categoria: str, db: SesionDep):
     xlsx_int = proyecto / f"_intermedio_{cat_slug}-{fecha}.xlsx"
     salida = proyecto / f"formato-hd-{cat_slug}-{fecha}.xlsx"
 
-    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida)
+    # Pasamos categoria=None si el cliente uso el sentinela __sin_categoria__
+    cat_filter = None if categoria == SIN_CATEGORIA else categoria
+    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida, categoria=cat_filter)
     return FileResponse(str(archivo), filename=archivo.name)

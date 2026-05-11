@@ -188,10 +188,8 @@ function productosApp() {
         alert('Selecciona una categoria primero.');
         return;
       }
-      // El backend marca todos los de la categoria y desmarca el resto antes de exportar.
+      // El backend exporta filtrando por categoria, sin tocar el estado de marcas.
       window.location.href = '/exportar/' + encodeURIComponent(this.categoriaFiltro);
-      // refrescar tras unos segundos para reflejar el nuevo estado de marcas
-      setTimeout(() => { this.cargarCategorias(); this.cargar(); }, 1500);
     },
   };
 }
