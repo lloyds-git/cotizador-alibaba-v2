@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, Integer, case, cast
 from sqlalchemy.orm import Session
 
 from app import db as db_module
@@ -107,12 +107,17 @@ def listar_productos(
 @router.get("/api/categorias")
 def listar_categorias(db: SesionDep):
     """Devuelve categorias con total y cuantos marcados, ordenadas por total desc."""
+    # CAST a Integer porque marcado_cotizar es Boolean y SQLAlchemy convierte
+    # SUM(bool) -> bool (devuelve True en vez del conteo real).
     filas = (
         db.query(
             Producto.categoria,
             func.count(Producto.id).label("total"),
             func.sum(
-                func.coalesce(Producto.marcado_cotizar, 0)
+                cast(
+                    case((Producto.marcado_cotizar.is_(True), 1), else_=0),
+                    Integer,
+                )
             ).label("marcados"),
         )
         .group_by(Producto.categoria)
@@ -474,18 +479,19 @@ def _correr_llenar_formato_hd(
                     f"No puedo borrar el archivo anterior (esta abierto en Excel?): {p.name}",
                 )
 
-    # El intermedio de exportar.py tiene 15 columnas (Foto, SKU, Descripcion, ...,
-    # CBM=K, Lead time=N, FOB USD=O). El default de llenar_formato_hd.py asume
-    # 22 columnas (layout viejo de pdf_a_formato_hd), por eso forzamos el mapeo.
+    # El intermedio de exportar.py tiene 17 columnas (Foto=A, SKU=B, Descripcion=C,
+    # ..., FOB USD=O, Retail c/IVA=P, Margen Lloyds=Q).
+    # El default de llenar_formato_hd.py asume el layout viejo (22 cols), por
+    # eso forzamos el mapeo.
     result = subprocess.run(
         [
             _sys.executable, str(script), str(xlsx_int), str(formato),
             # Mapeo correcto al HD destino:
-            #   col C (Descripcion) -> fila 8 (DESCRIPTION)
+            #   col C (Descripcion) -> fila 8  (DESCRIPTION)
             #   col O (FOB USD)     -> fila 11 (DOMESTIC COST)
-            # Las filas 16 (suggested retail) y 17 (margin formula) las llena
-            # Excel via formulas; aqui no se mapean desde el intermedio.
-            "--mapeo", "C=8,O=11", "--yes",
+            #   col P (Retail MXN)  -> fila 16 (SUGGESTED RETAIL)
+            #   col Q (Margen)      -> fila 17 (THD MARGIN)
+            "--mapeo", "C=8,O=11,P=16,Q=17", "--yes",
         ],
         capture_output=True, text=True, cwd=str(proyecto),
         stdin=subprocess.DEVNULL,
@@ -543,6 +549,42 @@ def exportar(db: SesionDep):
         origen="export-marcados",
     )
     return FileResponse(str(archivo), filename=archivo.name)
+
+
+@router.get("/exportar-interno")
+def exportar_interno(db: SesionDep):
+    """Genera xlsx vertical con TODAS las columnas (foto, FOB, costos, arancel,
+    landing, venta HD, retail, margenes) de los productos marcados. Uso interno.
+    """
+    from app.exportar import generar_export_interno_marcados
+
+    proyecto = Path(__file__).parent.parent
+    fecha = date.today().strftime("%Y%m%d")
+    salida = proyecto / f"cotizacion-interna-{fecha}.xlsx"
+    if salida.exists():
+        try:
+            salida.unlink()
+        except PermissionError:
+            raise HTTPException(
+                500,
+                f"No puedo borrar el archivo anterior (esta abierto en Excel?): {salida.name}",
+            )
+
+    n = generar_export_interno_marcados(
+        session=db,
+        xlsx_salida=str(salida),
+        base_fotos=str(proyecto / "data"),
+    )
+    if n == 0:
+        raise HTTPException(400, "No hay productos marcados.")
+    # Snapshot por producto exportado, igual que el HD
+    _snapshot_productos_exportados(
+        db,
+        db.query(Producto).filter(Producto.marcado_cotizar.is_(True)),
+        salida.name,
+        origen="export-interno",
+    )
+    return FileResponse(str(salida), filename=salida.name)
 
 
 @router.get("/exportar/{categoria}")
@@ -942,6 +984,50 @@ def borrar_costo(producto_id: int, costo_id: int, db: SesionDep):
     db.delete(c)
     db.commit()
     return {"ok": True}
+
+
+@router.get("/api/cotizaciones")
+def listar_cotizaciones_global(
+    db: SesionDep,
+    producto_id: int | None = Query(None),
+    archivo: str | None = Query(None),
+    origen: str | None = Query(None),
+    limit: int = Query(500, le=2000),
+):
+    """Lista global de snapshots con joins a producto para mostrar SKU y descripcion.
+
+    Filtros opcionales: producto_id, archivo (substring), origen.
+    """
+    q = (
+        db.query(CotizacionSnapshot, Producto)
+        .join(Producto, Producto.id == CotizacionSnapshot.producto_id)
+    )
+    if producto_id is not None:
+        q = q.filter(CotizacionSnapshot.producto_id == producto_id)
+    if archivo:
+        q = q.filter(CotizacionSnapshot.archivo_exportado.ilike(f"%{archivo}%"))
+    if origen:
+        q = q.filter(CotizacionSnapshot.origen == origen)
+    q = q.order_by(CotizacionSnapshot.creado_en.desc()).limit(limit)
+
+    items = []
+    for s, p in q.all():
+        d = _snapshot_to_dict(s)
+        d["sku"] = p.sku
+        d["descripcion"] = p.descripcion
+        d["categoria"] = p.categoria
+        d["foto"] = p.fotos[0].ruta_relativa if p.fotos else None
+        items.append(d)
+    return {"total": len(items), "items": items}
+
+
+@router.get("/cotizaciones", response_class=HTMLResponse)
+def pagina_cotizaciones(request: Request, db: SesionDep):
+    """Pagina con historial global de cotizaciones (todos los snapshots)."""
+    return TEMPLATES.TemplateResponse(
+        "cotizaciones.html",
+        {"request": request},
+    )
 
 
 @router.get("/aranceles", response_class=HTMLResponse)

@@ -82,17 +82,29 @@
               :title="categoriaFiltro ? 'Exportar categoria ' + categoriaFiltro : 'Selecciona una categoria para exportar por categoria'">
         Exportar categoria
       </button>
-      <a href="/exportar" class="bg-green-700 text-white px-4 py-1 rounded">
-        Exportar marcados
+      <a href="/exportar"
+         class="bg-green-700 hover:bg-green-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
+         title="Genera el formato HD-Mascotas para enviar al cliente">
+        Exportar HD
+        <span class="bg-white text-green-800 text-xs font-bold px-2 py-0.5 rounded-full"
+              x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
+      </a>
+      <a href="/exportar-interno"
+         class="bg-purple-700 hover:bg-purple-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
+         title="Genera xlsx vertical con todas las columnas (uso interno)">
+        Export interno
+        <span class="bg-white text-purple-800 text-xs font-bold px-2 py-0.5 rounded-full"
+              x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
       </a>
     </div>
 
-    <div class="mt-2 text-xs text-gray-600">
-      <span x-text="productos.length"></span> filas visibles
-      <span x-show="totalMarcados !== null"> &middot;
+    <div class="mt-2 text-xs text-gray-600 flex items-center gap-3">
+      <span><span x-text="productos.length"></span> filas visibles</span>
+      <span x-show="totalMarcados !== null"
+            class="bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded font-semibold">
         <span x-text="totalMarcados"></span> marcados en total
       </span>
-      <span class="ml-3 text-gray-400">Click en una fila para ver el detalle y los 14 pasos</span>
+      <span class="text-gray-400">Click en una fila para ver el detalle y los 14 pasos</span>
     </div>
   </div>
 

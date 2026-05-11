@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}Cotizaciones{% endblock %}
+{% block content %}
+<div x-data="cotizacionesApp()" x-init="init()">
+
+  <!-- Barra de filtros -->
+  <div class="mb-4 bg-white p-4 rounded shadow text-sm">
+    <div class="flex gap-3 items-center flex-wrap">
+      <h2 class="text-lg font-bold mr-3">Historial de cotizaciones</h2>
+      <input type="text" placeholder="Filtrar por archivo (ej. casa-jaula)..."
+             x-model="filtroArchivo" @input.debounce.300ms="cargar()"
+             class="border px-3 py-1 rounded flex-1 min-w-[200px]">
+      <select x-model="filtroOrigen" @change="cargar()"
+              class="border px-2 py-1 rounded">
+        <option value="">Todos los origenes</option>
+        <option value="manual">Manual (guardado desde panel)</option>
+        <option value="export-marcados">Export marcados</option>
+        <template x-for="o in origenesCategoria" :key="o">
+          <option :value="o" x-text="o"></option>
+        </template>
+      </select>
+      <button type="button" @click="agrupar = !agrupar"
+              class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-xs">
+        <span x-show="!agrupar">Agrupar por archivo</span>
+        <span x-show="agrupar">Vista lista plana</span>
+      </button>
+      <span class="text-xs text-gray-500 ml-auto">
+        <span x-text="snapshots.length"></span> snapshots
+      </span>
+    </div>
+  </div>
+
+  <!-- Vista lista plana -->
+  <template x-if="!agrupar">
+    <table class="bg-white w-full text-sm shadow rounded overflow-hidden">
+      <thead class="bg-gray-100 text-left">
+        <tr>
+          <th class="p-2">Foto</th>
+          <th class="p-2">SKU</th>
+          <th class="p-2">Descripcion</th>
+          <th class="p-2">Origen</th>
+          <th class="p-2">Fecha</th>
+          <th class="p-2 text-right">FOB efectivo</th>
+          <th class="p-2 text-right">Landing</th>
+          <th class="p-2 text-right">Retail MXN</th>
+          <th class="p-2 text-right">Margen real</th>
+          <th class="p-2">Archivo</th>
+          <th class="p-2"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="s in snapshots" :key="s.id">
+          <tr class="border-t hover:bg-blue-50">
+            <td class="p-2">
+              <template x-if="s.foto">
+                <img :src="'/' + s.foto" class="w-12 h-12 object-contain">
+              </template>
+            </td>
+            <td class="p-2 font-mono text-xs" x-text="s.sku || ''"></td>
+            <td class="p-2 text-xs max-w-xs truncate" :title="s.descripcion" x-text="s.descripcion"></td>
+            <td class="p-2 text-xs">
+              <span class="bg-purple-100 text-purple-800 px-2 py-0.5 rounded text-[10px]"
+                    x-text="s.origen"></span>
+            </td>
+            <td class="p-2 text-xs text-gray-600 font-mono"
+                x-text="new Date(s.creado_en).toLocaleString('es-MX', {dateStyle:'short', timeStyle:'short'})"></td>
+            <td class="p-2 text-right font-mono text-xs"
+                x-text="'$' + (s.fob_usd_efectivo || 0).toFixed(2)"></td>
+            <td class="p-2 text-right font-mono text-xs"
+                x-text="'$' + (s.landed_unit_mxn || 0).toFixed(2)"></td>
+            <td class="p-2 text-right font-mono font-semibold"
+                x-text="'$' + (s.retail_final_mxn || 0).toFixed(2)"></td>
+            <td class="p-2 text-right font-mono font-bold"
+                :class="(s.margen_real_pct || 0) >= 25 ? 'text-green-700' : 'text-red-700'"
+                x-text="(s.margen_real_pct || 0).toFixed(1) + '%'"></td>
+            <td class="p-2 text-xs text-gray-500 max-w-[180px] truncate"
+                :title="s.archivo_exportado || ''" x-text="s.archivo_exportado || '—'"></td>
+            <td class="p-2 text-right">
+              <button type="button" @click="borrar(s)"
+                      class="text-red-500 hover:underline text-[10px]">borrar</button>
+            </td>
+          </tr>
+        </template>
+        <tr x-show="snapshots.length === 0">
+          <td colspan="11" class="p-4 text-center text-gray-500">No hay cotizaciones guardadas.</td>
+        </tr>
+      </tbody>
+    </table>
+  </template>
+
+  <!-- Vista agrupada por archivo -->
+  <template x-if="agrupar">
+    <div>
+      <template x-for="grupo in snapshotsAgrupados()" :key="grupo.archivo">
+        <div class="bg-white shadow rounded mb-4 overflow-hidden">
+          <div class="bg-gray-100 px-4 py-2 flex justify-between items-center">
+            <div>
+              <span class="font-semibold" x-text="grupo.archivo || '(sin archivo)'"></span>
+              <span class="text-xs text-gray-500 ml-2">
+                <span x-text="grupo.items.length"></span> productos
+              </span>
+            </div>
+            <div class="text-xs text-gray-500 font-mono"
+                 x-text="new Date(grupo.fecha_max).toLocaleString('es-MX', {dateStyle:'short', timeStyle:'short'})">
+            </div>
+          </div>
+          <table class="w-full text-xs">
+            <thead class="bg-gray-50 text-left">
+              <tr>
+                <th class="p-2">Foto</th>
+                <th class="p-2">SKU</th>
+                <th class="p-2">Descripcion</th>
+                <th class="p-2 text-right">FOB efectivo</th>
+                <th class="p-2 text-right">Retail MXN</th>
+                <th class="p-2 text-right">Margen real</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="s in grupo.items" :key="s.id">
+                <tr class="border-t">
+                  <td class="p-2">
+                    <template x-if="s.foto">
+                      <img :src="'/' + s.foto" class="w-10 h-10 object-contain">
+                    </template>
+                  </td>
+                  <td class="p-2 font-mono" x-text="s.sku || ''"></td>
+                  <td class="p-2 max-w-md truncate" :title="s.descripcion" x-text="s.descripcion"></td>
+                  <td class="p-2 text-right font-mono"
+                      x-text="'$' + (s.fob_usd_efectivo || 0).toFixed(2)"></td>
+                  <td class="p-2 text-right font-mono font-semibold"
+                      x-text="'$' + (s.retail_final_mxn || 0).toFixed(2)"></td>
+                  <td class="p-2 text-right font-mono font-bold"
+                      :class="(s.margen_real_pct || 0) >= 25 ? 'text-green-700' : 'text-red-700'"
+                      x-text="(s.margen_real_pct || 0).toFixed(1) + '%'"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </template>
+      <div x-show="snapshots.length === 0" class="bg-white p-6 text-center text-gray-500 rounded shadow">
+        No hay cotizaciones guardadas.
+      </div>
+    </div>
+  </template>
+
+</div>
+
+<script>
+function cotizacionesApp() {
+  return {
+    snapshots: [],
+    filtroArchivo: '',
+    filtroOrigen: '',
+    agrupar: true,
+    origenesCategoria: [],
+
+    async init() {
+      await this.cargar();
+    },
+
+    async cargar() {
+      const params = new URLSearchParams();
+      if (this.filtroArchivo) params.set('archivo', this.filtroArchivo);
+      if (this.filtroOrigen) params.set('origen', this.filtroOrigen);
+      const r = await fetch('/api/cotizaciones?' + params.toString());
+      const j = await r.json();
+      this.snapshots = j.items;
+      // Recolectar origenes de tipo export-cat:xxx para dropdown
+      const set = new Set();
+      this.snapshots.forEach(s => {
+        if (s.origen && s.origen.startsWith('export-cat:')) set.add(s.origen);
+      });
+      this.origenesCategoria = [...set].sort();
+    },
+
+    snapshotsAgrupados() {
+      const grupos = {};
+      this.snapshots.forEach(s => {
+        const key = s.archivo_exportado || '(manual / sin archivo)';
+        if (!grupos[key]) {
+          grupos[key] = { archivo: key, items: [], fecha_max: s.creado_en };
+        }
+        grupos[key].items.push(s);
+        if (s.creado_en > grupos[key].fecha_max) {
+          grupos[key].fecha_max = s.creado_en;
+        }
+      });
+      return Object.values(grupos).sort((a, b) => b.fecha_max.localeCompare(a.fecha_max));
+    },
+
+    async borrar(s) {
+      if (!confirm(`Borrar snapshot del ${new Date(s.creado_en).toLocaleString()}?`)) return;
+      await fetch(`/api/productos/${s.producto_id}/snapshots/${s.id}`, { method: 'DELETE' });
+      await this.cargar();
+    },
+  };
+}
+</script>
+{% endblock %}
