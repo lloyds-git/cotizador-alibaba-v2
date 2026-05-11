@@ -35,9 +35,11 @@ DEFAULTS: dict[str, Decimal | list[Decimal] | str] = {
     "country_code": "MX",
 
     # Mexico (config_pais MX)
+    # Para Lloyds dept. mascotas: descuentos comerciales 10%, descuentos NA 0%,
+    # gastos fijos 24%. Total_desc = 34%. Editables en la UI por settings.
     "iva_pct": Decimal("16.00"),
-    "descuentos_pct": Decimal("24.00"),
-    "descuentos_na_pct": Decimal("4.00"),
+    "descuentos_pct": Decimal("10.00"),
+    "descuentos_na_pct": Decimal("0.00"),
     "gasto_fijo_pct": Decimal("24.00"),
     "psychological_prices_mx": [Decimal("29"), Decimal("49"), Decimal("69"), Decimal("99")],
     "psychological_prices_us": [Decimal("2.99"), Decimal("4.99"), Decimal("6.99"), Decimal("9.99")],

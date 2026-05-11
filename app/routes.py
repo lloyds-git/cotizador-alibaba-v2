@@ -256,6 +256,9 @@ def cotizar_14_pasos(
     margen_cliente: float | None = Query(None, description="Margen retailer (0-100)"),
     flete_maritimo_usd: float | None = Query(None, description="Flete maritimo USD/contenedor"),
     flete_local_mxn: float | None = Query(None, description="Flete local MXN por contenedor"),
+    descuentos_pct: float | None = Query(None, description="Descuentos comerciales % (0-100)"),
+    descuentos_na_pct: float | None = Query(None, description="Descuentos no aplicables % (0-100)"),
+    gasto_fijo_pct: float | None = Query(None, description="Gastos fijos % (0-100)"),
     piezas: int | None = Query(None, description="Piezas/40HQ override"),
 ):
     """Devuelve los 14 pasos del motor de cotizacion para un producto."""
@@ -272,9 +275,15 @@ def cotizar_14_pasos(
     from app.cotizador.lookup import resolver_arancel
     arancel = resolver_arancel(db, p.categoria, p.subcategoria, p.material)
 
-    # Settings: flete local default 70k MXN (Salo lo confirmo). El override
-    # del query string gana si viene.
+    # Settings: flete local default 70k MXN (Salo lo confirmo). Descuentos
+    # y gastos fijos editables. Cualquier override del query string gana.
     settings = {"flete_local_mxn": flete_local_mxn if flete_local_mxn is not None else 70000}
+    if descuentos_pct is not None:
+        settings["descuentos_pct"] = descuentos_pct
+    if descuentos_na_pct is not None:
+        settings["descuentos_na_pct"] = descuentos_na_pct
+    if gasto_fijo_pct is not None:
+        settings["gasto_fijo_pct"] = gasto_fijo_pct
 
     res = compute_for_row(
         row,

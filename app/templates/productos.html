@@ -22,6 +22,25 @@
       </label>
     </div>
 
+    <div class="flex gap-4 items-center flex-wrap mb-3 text-xs text-gray-600 border-t pt-2">
+      <span class="font-semibold uppercase">Descuentos + gastos (paso 10):</span>
+      <label>Descuentos %:
+        <input type="number" step="1" x-model.number="descuentosPct"
+               class="border px-2 py-1 w-16 ml-1">
+      </label>
+      <label>Descuentos NA %:
+        <input type="number" step="1" x-model.number="descuentosNaPct"
+               class="border px-2 py-1 w-16 ml-1">
+      </label>
+      <label>Gastos fijos %:
+        <input type="number" step="1" x-model.number="gastoFijoPct"
+               class="border px-2 py-1 w-16 ml-1">
+      </label>
+      <span class="text-gray-400">
+        Total: <span x-text="(descuentosPct + descuentosNaPct + gastoFijoPct).toFixed(0)"></span>%
+      </span>
+    </div>
+
     <div class="flex gap-3 items-center flex-wrap">
       <input type="text" placeholder="Buscar SKU o descripcion..."
              x-model="q" @input.debounce.300ms="cargar()"
@@ -343,6 +362,9 @@ function productosApp() {
     margenCliente: 0.40,
     fleteMaritimo: 5000,
     fleteLocal: 70000,
+    descuentosPct: 10,
+    descuentosNaPct: 0,
+    gastoFijoPct: 24,
     q: '',
     categoriaFiltro: '',
     soloMarcados: false,
@@ -362,6 +384,9 @@ function productosApp() {
       this.$watch('margenCliente', () => this.refrescarDetalle());
       this.$watch('fleteMaritimo', () => this.refrescarDetalle());
       this.$watch('fleteLocal', () => this.refrescarDetalle());
+      this.$watch('descuentosPct', () => this.refrescarDetalle());
+      this.$watch('descuentosNaPct', () => this.refrescarDetalle());
+      this.$watch('gastoFijoPct', () => this.refrescarDetalle());
     },
 
     async cargarCategorias() {
@@ -453,6 +478,9 @@ function productosApp() {
       params.set('margen_cliente', this.margenCliente * 100);
       params.set('flete_maritimo_usd', this.fleteMaritimo);
       params.set('flete_local_mxn', this.fleteLocal);
+      params.set('descuentos_pct', this.descuentosPct);
+      params.set('descuentos_na_pct', this.descuentosNaPct);
+      params.set('gasto_fijo_pct', this.gastoFijoPct);
       const r = await fetch(`/api/productos/${producto_id}/cotizar?` + params.toString());
       if (!r.ok) {
         alert('Error cargando detalle: ' + r.status);
