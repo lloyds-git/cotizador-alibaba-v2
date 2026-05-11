@@ -252,9 +252,10 @@ def cotizar_14_pasos(
     producto_id: int,
     db: SesionDep,
     tc: float | None = Query(None, description="Tipo de cambio MXN/USD override"),
-    margen_nuestro: float | None = Query(None, description="Margen Lloyds (0-1)"),
-    margen_cliente: float | None = Query(None, description="Margen retailer (0-1)"),
+    margen_nuestro: float | None = Query(None, description="Margen Lloyds (0-100)"),
+    margen_cliente: float | None = Query(None, description="Margen retailer (0-100)"),
     flete_maritimo_usd: float | None = Query(None, description="Flete maritimo USD/contenedor"),
+    flete_local_mxn: float | None = Query(None, description="Flete local MXN por contenedor"),
     piezas: int | None = Query(None, description="Piezas/40HQ override"),
 ):
     """Devuelve los 14 pasos del motor de cotizacion para un producto."""
@@ -271,8 +272,13 @@ def cotizar_14_pasos(
     from app.cotizador.lookup import resolver_arancel
     arancel = resolver_arancel(db, p.categoria, p.subcategoria, p.material)
 
+    # Settings: flete local default 70k MXN (Salo lo confirmo). El override
+    # del query string gana si viene.
+    settings = {"flete_local_mxn": flete_local_mxn if flete_local_mxn is not None else 70000}
+
     res = compute_for_row(
         row,
+        settings=settings,
         override_tc=tc,
         override_piezas_contenedor=piezas,
         override_flete_maritimo_usd=flete_maritimo_usd,

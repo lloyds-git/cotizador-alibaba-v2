@@ -17,6 +17,9 @@
       <label>Flete USD/40HQ:
         <input type="number" step="100" x-model.number="fleteMaritimo" class="border px-2 py-1 w-24 ml-1">
       </label>
+      <label>Flete local MXN:
+        <input type="number" step="1000" x-model.number="fleteLocal" class="border px-2 py-1 w-28 ml-1">
+      </label>
     </div>
 
     <div class="flex gap-3 items-center flex-wrap">
@@ -221,6 +224,40 @@
           </div>
         </template>
 
+        <!-- Resumen margen Lloyds (siempre visible) -->
+        <template x-if="parseFloat(detalle.pasos[8].valor) > 0">
+          <div class="mb-3 rounded-lg p-3 border-2"
+               :class="margenEfectivo() >= parseFloat(detalle.margen_nuestro)/100
+                       ? 'bg-green-50 border-green-300'
+                       : 'bg-red-50 border-red-300'">
+            <div class="flex justify-between items-baseline">
+              <span class="text-xs uppercase font-semibold text-gray-600">
+                Margen Lloyds efectivo
+              </span>
+              <span class="font-mono text-2xl font-bold"
+                    :class="margenEfectivo() >= parseFloat(detalle.margen_nuestro)/100
+                            ? 'text-green-700' : 'text-red-700'"
+                    x-text="(margenEfectivo() * 100).toFixed(1) + '%'"></span>
+            </div>
+            <div class="flex justify-between text-xs text-gray-600 mt-1">
+              <span>
+                Objetivo: <span x-text="parseFloat(detalle.margen_nuestro).toFixed(0)"></span>%
+              </span>
+              <span>
+                Retail base:
+                $<span x-text="formatearValor((retailEditado || parseFloat(detalle.pasos[12].valor)).toFixed(2))"></span>
+                <span class="text-gray-400 text-[10px]" x-show="retailEditado">(editado)</span>
+                <span class="text-gray-400 text-[10px]" x-show="!retailEditado">(paso 13)</span>
+              </span>
+            </div>
+            <template x-if="margenEfectivo() < parseFloat(detalle.margen_nuestro)/100">
+              <div class="text-[11px] text-red-700 mt-1">
+                ⚠ Por debajo del objetivo. Ajusta retail al alza o revisa FOB/arancel.
+              </div>
+            </template>
+          </div>
+        </template>
+
         <!-- 14 pasos -->
         <div class="mb-2">
           <div class="text-xs text-gray-500 uppercase mb-2 flex justify-between">
@@ -302,9 +339,10 @@
 function productosApp() {
   return {
     tc: 20.0,
-    margenNuestro: 0.15,
+    margenNuestro: 0.25,
     margenCliente: 0.40,
     fleteMaritimo: 5000,
+    fleteLocal: 70000,
     q: '',
     categoriaFiltro: '',
     soloMarcados: false,
@@ -323,6 +361,7 @@ function productosApp() {
       this.$watch('margenNuestro', () => this.refrescarDetalle());
       this.$watch('margenCliente', () => this.refrescarDetalle());
       this.$watch('fleteMaritimo', () => this.refrescarDetalle());
+      this.$watch('fleteLocal', () => this.refrescarDetalle());
     },
 
     async cargarCategorias() {
@@ -413,6 +452,7 @@ function productosApp() {
       params.set('margen_nuestro', this.margenNuestro * 100);
       params.set('margen_cliente', this.margenCliente * 100);
       params.set('flete_maritimo_usd', this.fleteMaritimo);
+      params.set('flete_local_mxn', this.fleteLocal);
       const r = await fetch(`/api/productos/${producto_id}/cotizar?` + params.toString());
       if (!r.ok) {
         alert('Error cargando detalle: ' + r.status);
@@ -434,8 +474,13 @@ function productosApp() {
       this.detalle = nuevo;
     },
 
-    margenEfectivo() {
-      if (!this.detalle || !this.retailEditado || this.retailEditado <= 0) return 0;
+    margenEfectivo(retailOverride = null) {
+      if (!this.detalle) return 0;
+      // Si no se pasa retail, usa el actual (editado o paso 13)
+      const retail = retailOverride !== null
+        ? retailOverride
+        : (this.retailEditado || parseFloat(this.detalle.pasos[12].valor));
+      if (!retail || retail <= 0) return 0;
       // Cadena directa: paso9 -> /(1-mn) -> /(1-totalDesc) = paso11
       //                paso11 -> /(1-mc) = paso12
       //                paso12 -> *(1+iva) = paso13
@@ -444,7 +489,7 @@ function productosApp() {
       const mc = parseFloat(this.detalle.margen_cliente) / 100;
       const iva = (this.detalle.iva_pct || 16) / 100;
       const td = (this.detalle.total_desc_pct || 52) / 100;
-      const paso12 = this.retailEditado / (1 + iva);
+      const paso12 = retail / (1 + iva);
       const paso11 = paso12 * (1 - mc);
       // paso11 = paso9 / ((1-mn) * (1-td))   =>   (1-mn) = paso9 / (paso11 * (1-td))
       if (paso11 <= 0 || landed <= 0) return -999;
