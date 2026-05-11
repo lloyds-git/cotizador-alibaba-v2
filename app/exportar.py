@@ -113,8 +113,6 @@ def _cotizar_producto(
             gastos_aduanales_pct. Cualquier subset.
     """
     params = params or {}
-    # Si llegan params no vacios, el snapshot se ignora completamente
-    usar_snapshot_si_existe = not bool(params)
     base = {
         "fob_efectivo_usd": fob_efectivo,
         "piezas_contenedor": 0,
@@ -143,9 +141,10 @@ def _cotizar_producto(
             .first()
         )
 
-        # Si llegan params explicitos, ignorar snapshot. Si no, usar snapshot
-        # como fuente preferida (con fallback a None para usar defaults).
-        if usar_snapshot_si_existe and snap:
+        # Snapshot manda SIEMPRE: si el producto tiene snapshot, esos params
+        # representan los valores que el usuario decidio adecuados para este
+        # producto. La barra superior solo aplica a productos sin snapshot.
+        if snap:
             snap_params = {
                 "tc": snap.tc,
                 "margen_nuestro_pct": snap.margen_nuestro_pct,
@@ -209,14 +208,14 @@ def _cotizar_producto(
             "retail_redondeado_mxn": retail_redondeado,
         })
 
-        if usar_snapshot_si_existe and snap and snap.retail_final_mxn and snap.retail_final_mxn > 0:
-            # Sin params: retail editado del snapshot manda
+        if snap and snap.retail_final_mxn and snap.retail_final_mxn > 0:
+            # Snapshot manda: retail editado, venta y margen guardados
             retail_civa = float(snap.retail_final_mxn)
             venta_hd = float(snap.venta_lloyds_mxn or venta_motor)
             margen_lloyds = float(snap.margen_real_pct or 0) / 100
             base["fuente"] = "snapshot"
         else:
-            # Con params explicitos, o sin snapshot: usar motor con params/defaults
+            # Sin snapshot: usar motor con params/defaults
             retail_civa = retail_motor
             venta_hd = venta_motor
             cp = country_params(res.country_code, settings=settings)

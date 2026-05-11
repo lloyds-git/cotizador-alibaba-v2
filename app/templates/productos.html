@@ -20,6 +20,11 @@
       <label>Flete local MXN:
         <input type="number" step="1000" x-model.number="fleteLocal" class="border px-2 py-1 w-28 ml-1">
       </label>
+      <button type="button" @click="resetParams()"
+              class="ml-auto bg-gray-200 hover:bg-gray-300 text-xs px-3 py-1 rounded"
+              title="Volver a los valores por defecto y limpiar retail editado">
+        Reset
+      </button>
     </div>
 
     <div class="flex gap-4 items-center flex-wrap mb-3 text-xs text-gray-600 border-t pt-2">
@@ -517,17 +522,23 @@
 </div>
 
 <script>
+// Defaults globales para los params de la barra (se usan al hacer reset
+// o cuando un producto no tiene snapshot guardado).
+const DEFAULTS_PARAMS = {
+  tc: 20.0,
+  margenNuestro: 0.25,
+  margenCliente: 0.40,
+  fleteMaritimo: 5000,
+  fleteLocal: 70000,
+  descuentosPct: 10,
+  descuentosNaPct: 0,
+  gastoFijoPct: 24,
+  gastosAduanalesPct: 5,
+};
+
 function productosApp() {
   return {
-    tc: 20.0,
-    margenNuestro: 0.25,
-    margenCliente: 0.40,
-    fleteMaritimo: 5000,
-    fleteLocal: 70000,
-    descuentosPct: 10,
-    descuentosNaPct: 0,
-    gastoFijoPct: 24,
-    gastosAduanalesPct: 5,
+    ...DEFAULTS_PARAMS,
     q: '',
     categoriaFiltro: '',
     soloMarcados: false,
@@ -639,6 +650,24 @@ function productosApp() {
     },
 
     async cargarDetalle(producto_id) {
+      // Si cambiamos de producto, primero cargar params del snapshot mas
+      // reciente (si existe) para que la barra y el calculo reflejen los
+      // valores que el usuario decidio para ESTE producto.
+      const cambioDeProducto = !this.detalle || this.detalle.producto_id !== producto_id;
+      if (cambioDeProducto) {
+        this.retailEditado = null;
+        this.origen = null;
+        this.snapshots = [];
+        this.mostrarHistorial = false;
+        await this.aplicarParamsDeSnapshot(producto_id);
+        // Cargar origen en paralelo, no bloquea
+        fetch(`/api/productos/${producto_id}/origen`).then(r => r.json()).then(o => {
+          if (this.detalle && this.detalle.producto_id === producto_id) {
+            this.origen = o;
+          }
+        }).catch(() => {});
+      }
+
       const params = new URLSearchParams();
       params.set('tc', this.tc);
       // El motor espera margen en escala 0-100 (15 = 15%), no 0-1
@@ -655,22 +684,48 @@ function productosApp() {
         alert('Error cargando detalle: ' + r.status);
         return;
       }
-      const nuevo = await r.json();
-      // Reset retailEditado solo si cambia el producto
-      const cambioDeProducto = !this.detalle || this.detalle.producto_id !== nuevo.producto_id;
-      if (cambioDeProducto) {
-        this.retailEditado = null;
-        this.origen = null;
-        this.snapshots = [];
-        this.mostrarHistorial = false;
-        // Cargar origen en paralelo, no bloquea
-        fetch(`/api/productos/${producto_id}/origen`).then(r => r.json()).then(o => {
-          if (this.detalle && this.detalle.producto_id === producto_id) {
-            this.origen = o;
-          }
-        }).catch(() => {});
+      this.detalle = await r.json();
+    },
+
+    async aplicarParamsDeSnapshot(producto_id) {
+      // Carga el ultimo snapshot del producto y aplica sus params a la
+      // barra superior. Si no hay snapshot, deja los params como estan
+      // (probablemente defaults o lo que el usuario haya dejado).
+      try {
+        const r = await fetch(`/api/productos/${producto_id}/snapshots`);
+        if (!r.ok) return;
+        const j = await r.json();
+        if (!j.items || j.items.length === 0) return;
+        const s = j.items[0]; // mas reciente (orden desc)
+        // Tambien capturamos el retail editado del snapshot
+        if (s.retail_final_mxn) this.retailEditado = s.retail_final_mxn;
+        if (s.tc != null) this.tc = s.tc;
+        if (s.margen_nuestro_pct != null) this.margenNuestro = s.margen_nuestro_pct / 100;
+        if (s.margen_cliente_pct != null) this.margenCliente = s.margen_cliente_pct / 100;
+        if (s.flete_maritimo_usd != null) this.fleteMaritimo = s.flete_maritimo_usd;
+        if (s.flete_local_mxn != null) this.fleteLocal = s.flete_local_mxn;
+        if (s.descuentos_pct != null) this.descuentosPct = s.descuentos_pct;
+        if (s.descuentos_na_pct != null) this.descuentosNaPct = s.descuentos_na_pct;
+        if (s.gasto_fijo_pct != null) this.gastoFijoPct = s.gasto_fijo_pct;
+        if (s.gastos_aduanales_pct != null) this.gastosAduanalesPct = s.gastos_aduanales_pct;
+      } catch (e) {
+        console.warn('No pude cargar snapshot del producto', e);
       }
-      this.detalle = nuevo;
+    },
+
+    resetParams() {
+      // Vuelve a los defaults y limpia retail editado.
+      this.tc = DEFAULTS_PARAMS.tc;
+      this.margenNuestro = DEFAULTS_PARAMS.margenNuestro;
+      this.margenCliente = DEFAULTS_PARAMS.margenCliente;
+      this.fleteMaritimo = DEFAULTS_PARAMS.fleteMaritimo;
+      this.fleteLocal = DEFAULTS_PARAMS.fleteLocal;
+      this.descuentosPct = DEFAULTS_PARAMS.descuentosPct;
+      this.descuentosNaPct = DEFAULTS_PARAMS.descuentosNaPct;
+      this.gastoFijoPct = DEFAULTS_PARAMS.gastoFijoPct;
+      this.gastosAduanalesPct = DEFAULTS_PARAMS.gastosAduanalesPct;
+      this.retailEditado = null;
+      if (this.detalle) this.refrescarDetalle();
     },
 
     // Margen real estilo Salo: utilidad / venta, donde

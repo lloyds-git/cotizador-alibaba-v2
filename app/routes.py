@@ -518,13 +518,15 @@ def _snapshot_productos_exportados(
     productos_q,
     archivo_nombre: str,
     origen: str,
+    params: dict | None = None,
 ) -> int:
     """Crea un CotizacionSnapshot por cada producto en la query exportada.
 
-    Usa los defaults del motor + costos adicionales del producto. No
-    captura el retail editado de la UI (ese requiere POST manual desde
-    el panel).
+    Persiste los params actuales (TC, margenes, fletes, descuentos) en el
+    snapshot para que al re-abrir el producto la UI muestre los valores
+    con los que se exporto. NO sobrescribe snapshots previos.
     """
+    params = params or {}
     n = 0
     for p in productos_q.all():
         try:
@@ -532,6 +534,15 @@ def _snapshot_productos_exportados(
                 db, p.id,
                 origen=origen,
                 archivo_exportado=archivo_nombre,
+                tc=params.get("tc"),
+                margen_nuestro_pct=params.get("margen_nuestro_pct"),
+                margen_cliente_pct=params.get("margen_cliente_pct"),
+                flete_maritimo_usd=params.get("flete_maritimo_usd"),
+                flete_local_mxn=params.get("flete_local_mxn"),
+                descuentos_pct=params.get("descuentos_pct"),
+                descuentos_na_pct=params.get("descuentos_na_pct"),
+                gasto_fijo_pct=params.get("gasto_fijo_pct"),
+                gastos_aduanales_pct=params.get("gastos_aduanales_pct"),
             )
             n += 1
         except Exception:
@@ -586,6 +597,7 @@ def exportar(
         db.query(Producto).filter(Producto.marcado_cotizar.is_(True)),
         archivo.name,
         origen="export-marcados",
+        params=params,
     )
     return FileResponse(str(archivo), filename=archivo.name)
 
@@ -626,6 +638,7 @@ def exportar_interno(
         db.query(Producto).filter(Producto.marcado_cotizar.is_(True)),
         salida.name,
         origen="export-interno",
+        params=params,
     )
     return FileResponse(str(salida), filename=salida.name)
 
@@ -663,6 +676,7 @@ def exportar_categoria(
         _aplicar_filtro_categoria(db.query(Producto), categoria),
         archivo.name,
         origen=f"export-cat:{cat_slug}",
+        params=params,
     )
     return FileResponse(str(archivo), filename=archivo.name)
 
