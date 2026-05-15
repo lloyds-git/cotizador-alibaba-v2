@@ -59,12 +59,23 @@ from adobe.pdfservices.operation.pdfjobs.result.extract_pdf_result import (
 )
 
 
-SCRIPT_LLENAR = (
+# Rutas para el paso 4 (llenar formato HD via Excel COM).
+# Se sobreescriben con las vars de entorno SCRIPT_LLENAR_HD y FORMATO_HD_PATH
+# (definidas en .env). Si las rutas no existen en runtime, el paso 4 se salta
+# automaticamente (util en Linux/Docker, donde no hay Excel COM).
+DEFAULT_SCRIPT_LLENAR = (
     r"C:\Users\salomon.DC0\Documents\Mascotas-9Mayo\llenar_formato_hd.py"
 )
-FORMATO_HD = (
+DEFAULT_FORMATO_HD = (
     r"C:\Users\salomon.DC0\Documents\Mascotas-9Mayo\Formato HD-Mascotas.xlsb"
 )
+
+
+def rutas_formato_hd() -> tuple[str, str]:
+    load_dotenv()
+    script = os.environ.get("SCRIPT_LLENAR_HD") or DEFAULT_SCRIPT_LLENAR
+    formato = os.environ.get("FORMATO_HD_PATH") or DEFAULT_FORMATO_HD
+    return script, formato
 
 # Limpiar artefactos de openxml cuando Adobe escribe textos
 LIMPIAR_RE = re.compile(r"_x000D_|\r|\n+")
@@ -636,12 +647,20 @@ def main() -> None:
 
     # Paso 3: construir xlsx intermedio
     print()
+    # El nombre del PDF original siempre va al meta, sirva o no Claude.
+    # Con esto el ingest sabe que PDF muestra al hacer click en "Cotizacion original".
+    meta: dict = {"pdf_original": Path(pdf_path).name}
     if usar_claude:
         print("3. Calidad baja: usando Claude Haiku como fallback...")
         try:
             from extraer_con_claude import extraer_con_claude
             figures_dir = os.path.join(carpeta_extract, "figures")
-            productos = extraer_con_claude(json_path, figures_dir)
+            resultado = extraer_con_claude(json_path, figures_dir)
+            productos = resultado["productos"]
+            meta.update({
+                "seller": resultado.get("seller", ""),
+                "buyer": resultado.get("buyer", ""),
+            })
             n = construir_xlsx_desde_claude(productos, carpeta_extract, xlsx_intermedio)
             print(f"   {n} productos escritos en {xlsx_intermedio}")
         except Exception as e:
@@ -653,14 +672,40 @@ def main() -> None:
         n = construir_xlsx_intermedio(filas, carpeta_extract, xlsx_intermedio)
         print(f"   {n} filas escritas.")
 
+    # Persistir metadata (seller/buyer) junto al intermedio.
+    # El ingest la leera para nombrar al proveedor.
+    meta_path = xlsx_intermedio + ".meta.json"
+    if meta:
+        Path(meta_path).write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"   Metadata: {meta_path}")
+
     # Paso 4: invocar llenar_formato_hd.py
+    # Saltar con --no-hd (necesario en Linux/Docker donde no hay Excel COM).
+    if "--no-hd" in sys.argv:
+        print()
+        print(f"4. Saltado (--no-hd). Intermedio listo en: {xlsx_intermedio}")
+        sys.exit(0)
+
+    script_llenar, formato_hd = rutas_formato_hd()
+    # Auto-skip si las rutas no existen (Linux/Docker o paths cambiaron).
+    if not os.path.exists(script_llenar) or not os.path.exists(formato_hd):
+        print()
+        print("4. Saltado: SCRIPT_LLENAR_HD/FORMATO_HD_PATH no existen en el sistema.")
+        print(f"   script: {script_llenar} ({'OK' if os.path.exists(script_llenar) else 'NO EXISTE'})")
+        print(f"   formato: {formato_hd} ({'OK' if os.path.exists(formato_hd) else 'NO EXISTE'})")
+        print(f"   Intermedio listo en: {xlsx_intermedio}")
+        sys.exit(0)
+
     print()
     print("4. Llamando a llenar_formato_hd.py...")
     cmd = [
         sys.executable,
-        SCRIPT_LLENAR,
+        script_llenar,
         xlsx_intermedio,
-        FORMATO_HD,
+        formato_hd,
         "--mapeo",
         "C=8,O=11",
     ]

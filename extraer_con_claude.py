@@ -210,24 +210,31 @@ Te paso el contenido de un PDF de cotizacion que Adobe extrajo. Cada elemento
 tiene tipo ('texto' o 'figura'), pagina (p), coordenada Y (y, donde mayor=mas arriba),
 y el texto o archivo de imagen.
 
-Tu tarea: identificar CADA PRODUCTO distinto del catalogo/cotizacion y devolver
-sus datos como JSON.
+Tu tarea: identificar (a) el PROVEEDOR (seller) que emite la cotizacion y
+(b) CADA PRODUCTO distinto del catalogo/cotizacion. Devolver todo como JSON.
 
 REGLAS:
-1. Cada producto tipicamente tiene: nombre, codigo SKU, precio FOB en USD,
+1. PROVEEDOR (seller): es la empresa que VENDE/emite la cotizacion. Suele
+   aparecer como "Seller", "Vendor", "From", o como company name en el
+   encabezado. NO confundas con "Buyer" (comprador, ej: Fortuna Abadi).
+   Si aparece dos veces (encabezado + tabla), usa la version mas completa
+   con sufijo legal (CO.,LTD, S.A., Inc., GmbH, etc).
+2. Cada producto tipicamente tiene: nombre, codigo SKU, precio FOB en USD,
    medidas/tamano, material, peso, MOQ, color, packing, una imagen.
-2. Ignora encabezados de pagina, datos del proveedor (telefono, email, banco),
-   terminos generales (validity), logos, footers.
-3. Si un producto tiene variantes (tamanos, colores) con precios distintos,
+3. Ignora encabezados de pagina, datos administrativos del proveedor
+   (telefono, email, banco), terminos generales (validity), logos, footers.
+4. Si un producto tiene variantes (tamanos, colores) con precios distintos,
    listalas como productos separados.
-4. Si no hay codigo SKU explicito, deja "sku" como cadena vacia.
-5. Para "foto": elige el archivo de figura mas cercano al producto por
+5. Si no hay codigo SKU explicito, deja "sku" como cadena vacia.
+6. Para "foto": elige el archivo de figura mas cercano al producto por
    coordenada Y en la misma pagina. Si no hay figura cercana, "".
-6. Para "fob": numero sin "$" ni "US$". Si no lo encuentras, null.
-7. Para campos opcionales, deja "" si no aparecen en el PDF.
+7. Para "fob": numero sin "$" ni "US$". Si no lo encuentras, null.
+8. Para campos opcionales, deja "" si no aparecen en el PDF.
 
 Devuelve EXCLUSIVAMENTE un JSON valido (sin texto adicional ni markdown):
 {{
+  "seller": "Xi'an Canal Fashion BIO-TECH CO.,LTD",
+  "buyer": "Fortuna Abadi",
   "productos": [
     {{
       "sku": "XDB-490M1",
@@ -250,6 +257,8 @@ Devuelve EXCLUSIVAMENTE un JSON valido (sin texto adicional ni markdown):
   ]
 }}
 
+Si no podes identificar al seller con certeza, deja "seller": "".
+
 Figuras disponibles en el PDF:
 {json.dumps(figuras, indent=2)}
 
@@ -264,14 +273,14 @@ def extraer_con_claude(
     modelo: str = MODELO_DEFAULT,
     max_tokens_salida: int = 32000,
     clasificar: bool = True,
-) -> list[dict]:
+) -> dict:
     """
     Llama a Claude para extraer productos de un PDF cuyo JSON ya extrajo Adobe.
 
     Si clasificar=True, primero clasifica todas las figuras visualmente y solo
     pasa las de tipo 'producto' al extractor (filtra logos, empaques, diagramas).
 
-    Devuelve [{sku, desc, fob, foto}, ...].
+    Devuelve {"seller": str, "buyer": str, "productos": [{sku, desc, fob, foto, ...}]}.
     """
     load_dotenv()
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -330,11 +339,13 @@ def extraer_con_claude(
     print(f"  Prompt: {len(prompt)} chars, {len(elementos)} elementos, {len(figuras)} figuras producto")
 
     client = anthropic.Anthropic()
-    resp = client.messages.create(
+    # Streaming requerido cuando max_tokens es alto (>~8k); evita el timeout de 10 min.
+    with client.messages.stream(
         model=modelo,
         max_tokens=max_tokens_salida,
         messages=[{"role": "user", "content": prompt}],
-    )
+    ) as stream:
+        resp = stream.get_final_message()
 
     texto = resp.content[0].text.strip()
     print(f"  Tokens: in={resp.usage.input_tokens} out={resp.usage.output_tokens}")
@@ -359,7 +370,13 @@ def extraer_con_claude(
         )
 
     productos = parsed.get("productos", [])
+    seller = (parsed.get("seller") or "").strip()
+    buyer = (parsed.get("buyer") or "").strip()
     print(f"  Productos extraidos por Claude: {len(productos)}")
+    if seller:
+        print(f"  Seller detectado: {seller}")
+    if buyer:
+        print(f"  Buyer detectado: {buyer}")
 
     # Propagar foto a variantes que comparten prefijo SKU.
     # Ej: XDB-490S1, XDB-490M1, XDB-490S2 todos comparten "XDB-490" -> mismo grupo.
@@ -427,7 +444,7 @@ def extraer_con_claude(
         print(f"  Fotos propagadas por prefijo SKU: {propagadas}")
         print(f"  Fotos asignadas por fallback: {asignadas_fallback}")
 
-    return productos
+    return {"seller": seller, "buyer": buyer, "productos": productos}
 
 
 def main() -> None:
@@ -439,7 +456,8 @@ def main() -> None:
     if not os.path.exists(json_path):
         sys.exit(f"No existe: {json_path}")
 
-    productos = extraer_con_claude(json_path, figures_dir)
+    resultado = extraer_con_claude(json_path, figures_dir)
+    productos = resultado["productos"]
     print()
     print(f"Extraidos {len(productos)} productos:")
     for i, p in enumerate(productos[:20], 1):
