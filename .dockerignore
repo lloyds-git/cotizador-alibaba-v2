@@ -1,0 +1,60 @@
+# Git / VCS
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Datos generados (la BD se monta como volumen, no se copia a la imagen)
+data/*.db
+data/fotos/
+
+# Archivos pesados / privados
+*.pdf
+*.xls
+*.xlsx
+*.xlsb
+~$*
+_adobe_extract_*/
+_intermedio_*.xlsx
+formato-hd-*.xlsx
+
+# Sí incluir fixtures de tests
+!tests/fixtures/_intermedio_*.xlsx
+!tests/fixtures/*.png
+
+# Subcarpetas con datos brutos
+Higiene/
+rejas/
+2026-*
+
+# Logs / exports
+descarga_log.csv
+*.csv
+
+# Secretos (se inyectan vía env_file)
+.env
+credentials.json
+token.json
+threads_page*.json
+
+# Editor / IDE
+.vscode/
+.idea/
+.claude/
+
+# Docker mismo
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs
+docs/
+*.md
+!README.md
