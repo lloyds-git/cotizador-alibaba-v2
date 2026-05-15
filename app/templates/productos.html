@@ -25,6 +25,15 @@
               title="Volver a los valores por defecto y limpiar retail editado">
         Reset
       </button>
+      <button type="button" @click="editable = !editable"
+              :class="editable
+                ? 'bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300'
+                : 'bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300'"
+              class="text-xs px-3 py-1 rounded inline-flex items-center gap-1"
+              :title="editable ? 'Edicion activa: los campos se guardan al perder foco' : 'Modo solo lectura: activa para editar productos'">
+        <span x-text="editable ? '✏️' : '🔒'"></span>
+        <span x-text="editable ? 'Editando' : 'Bloqueado'"></span>
+      </button>
     </div>
 
     <div class="flex gap-4 items-center flex-wrap mb-3 text-xs text-gray-600 border-t pt-2">
@@ -64,6 +73,17 @@
           <template x-for="c in categorias" :key="c.categoria || '__nil__'">
             <option :value="c.categoria === null ? '__sin_categoria__' : c.categoria"
                     x-text="(c.categoria || '(sin categoria)') + ' (' + c.total + ')'"></option>
+          </template>
+        </select>
+      </label>
+
+      <label class="flex items-center gap-2">
+        <span>Proveedor:</span>
+        <select x-model="proveedorFiltro" @change="cargar()"
+                class="border px-2 py-1 rounded max-w-[260px]">
+          <option value="">Todos</option>
+          <template x-for="pv in proveedores" :key="pv.id">
+            <option :value="pv.id" x-text="pv.nombre + ' (' + pv.total + ')'"></option>
           </template>
         </select>
       </label>
@@ -140,7 +160,27 @@
               </template>
             </td>
             <td class="p-2 font-mono text-xs" x-text="p.sku || ''"></td>
-            <td class="p-2 max-w-md text-xs" x-text="p.descripcion"></td>
+            <!-- Descripcion: editable inline cuando editable=true -->
+            <td class="p-2 max-w-md text-xs" @click.stop>
+              <template x-if="editable">
+                <div class="relative">
+                  <input type="text" :value="p.descripcion || ''"
+                         @change="actualizarCampoProducto(p.id, 'descripcion', $event.target.value, 'text')"
+                         class="w-full border px-1 py-0.5 text-xs rounded focus:ring-1 focus:ring-blue-300 outline-none">
+                  <span class="absolute -top-2 right-0 text-[10px]"
+                        x-show="saving[p.id + ':descripcion']"
+                        :class="{
+                          'text-amber-600': saving[p.id + ':descripcion'] === 'saving',
+                          'text-green-600': saving[p.id + ':descripcion'] === 'ok',
+                          'text-red-600': saving[p.id + ':descripcion'] === 'error'
+                        }"
+                        x-text="{'saving':'⏳','ok':'✓','error':'✗'}[saving[p.id + ':descripcion']] || ''"></span>
+                </div>
+              </template>
+              <template x-if="!editable">
+                <span x-text="p.descripcion"></span>
+              </template>
+            </td>
             <td class="p-2 text-xs text-gray-600 max-w-[160px] truncate"
                 :title="p.proveedor || ''" x-text="p.proveedor || ''"></td>
             <td class="p-2" @click.stop>
@@ -156,7 +196,27 @@
                 <option value="__nueva__">+ Crear nueva...</option>
               </select>
             </td>
-            <td class="p-2 font-mono" x-text="p.fob_usd ? '$' + p.fob_usd.toFixed(2) : ''"></td>
+            <!-- FOB USD: editable inline cuando editable=true -->
+            <td class="p-2 font-mono" @click.stop>
+              <template x-if="editable">
+                <div class="relative">
+                  <input type="number" step="0.01" :value="p.fob_usd ?? ''"
+                         @change="actualizarCampoProducto(p.id, 'fob_usd', $event.target.value, 'number')"
+                         class="w-20 border px-1 py-0.5 text-xs rounded focus:ring-1 focus:ring-blue-300 outline-none text-right">
+                  <span class="absolute -top-2 right-0 text-[10px]"
+                        x-show="saving[p.id + ':fob_usd']"
+                        :class="{
+                          'text-amber-600': saving[p.id + ':fob_usd'] === 'saving',
+                          'text-green-600': saving[p.id + ':fob_usd'] === 'ok',
+                          'text-red-600': saving[p.id + ':fob_usd'] === 'error'
+                        }"
+                        x-text="{'saving':'⏳','ok':'✓','error':'✗'}[saving[p.id + ':fob_usd']] || ''"></span>
+                </div>
+              </template>
+              <template x-if="!editable">
+                <span x-text="p.fob_usd ? '$' + p.fob_usd.toFixed(2) : ''"></span>
+              </template>
+            </td>
             <td class="p-2 text-right" x-text="p.cbm ? p.cbm.toFixed(3) : ''"></td>
             <td class="p-2 text-right" x-text="p.pzas_40hq || ''"></td>
             <td class="p-2 text-center" @click.stop>
@@ -209,8 +269,9 @@
             </div>
             <template x-if="origen && origen.existe">
               <div class="text-xs mt-1">
-                <a :href="origen.ver_url" target="_blank"
-                   class="text-blue-600 hover:text-blue-800 underline">
+                <a :href="origen.ver_url"
+                   @click.prevent="abrirOrigenEnVentana(origen.ver_url)"
+                   class="text-blue-600 hover:text-blue-800 underline cursor-pointer">
                   📄 Ver cotizacion original (<span x-text="origen.tipo"></span>)
                 </a>
                 <span class="text-gray-400 ml-1" x-show="origen.miembros && origen.miembros.length > 1">
@@ -220,6 +281,9 @@
             </template>
             <template x-if="origen && !origen.existe">
               <div class="text-xs mt-1 text-gray-400" x-text="'Cotizacion original: ' + (origen.razon || 'no disponible')"></div>
+            </template>
+            <template x-if="!origen">
+              <div class="text-xs mt-1 text-gray-400 italic">Cargando origen...</div>
             </template>
           </div>
           <button type="button" @click="detalle = null"
@@ -239,18 +303,49 @@
           <div class="text-sm" x-text="detalle.descripcion"></div>
         </div>
 
-        <!-- Datos del producto en 2 columnas -->
+        <!-- Datos del producto en 2 columnas (editables in-place; PATCH al perder foco) -->
         <div class="grid grid-cols-2 gap-2 text-xs mb-4">
-          <template x-for="(label, key) in {
-            material:'Material', medidas:'Medidas', peso_kg:'Peso (kg)',
-            color:'Color', moq:'MOQ', packing:'Packing',
-            carton_dims:'Carton dims', cbm:'CBM / caja',
-            pzas_20ft:'Pzas / 20ft', pzas_40hq:'Pzas / 40HQ',
-            lead_time:'Lead time', fob_usd:'FOB USD'
-          }">
+          <template x-for="campo in [
+            {key:'material', label:'Material', tipo:'text'},
+            {key:'medidas', label:'Medidas', tipo:'text'},
+            {key:'peso_kg', label:'Peso (kg)', tipo:'number', step:'0.01'},
+            {key:'color', label:'Color', tipo:'text'},
+            {key:'moq', label:'MOQ', tipo:'text'},
+            {key:'packing', label:'Packing', tipo:'text'},
+            {key:'carton_dims', label:'Carton dims', tipo:'text'},
+            {key:'cbm', label:'CBM / caja', tipo:'number', step:'0.001'},
+            {key:'pzas_20ft', label:'Pzas / 20ft', tipo:'number', step:'1'},
+            {key:'pzas_40hq', label:'Pzas / 40HQ', tipo:'number', step:'1'},
+            {key:'lead_time', label:'Lead time', tipo:'text'},
+            {key:'fob_usd', label:'FOB USD', tipo:'number', step:'0.01'}
+          ]" :key="campo.key">
             <div class="bg-gray-50 px-2 py-1 rounded">
-              <div class="text-gray-500 uppercase text-[10px]" x-text="label"></div>
-              <div class="font-mono" x-text="(detalle[key] !== null && detalle[key] !== '' && detalle[key] !== undefined) ? detalle[key] : '—'"></div>
+              <div class="text-gray-500 uppercase text-[10px] flex justify-between items-center">
+                <span x-text="campo.label"></span>
+                <!-- Indicador de estado de guardado -->
+                <span class="text-[10px] ml-1"
+                      x-show="saving[detalle.producto_id + ':' + campo.key]"
+                      :class="{
+                        'text-amber-600': saving[detalle.producto_id + ':' + campo.key] === 'saving',
+                        'text-green-600': saving[detalle.producto_id + ':' + campo.key] === 'ok',
+                        'text-red-600': saving[detalle.producto_id + ':' + campo.key] === 'error'
+                      }"
+                      x-text="{
+                        'saving': '⏳',
+                        'ok': '✓',
+                        'error': '✗'
+                      }[saving[detalle.producto_id + ':' + campo.key]] || ''"></span>
+              </div>
+              <input
+                :type="campo.tipo"
+                :step="campo.step"
+                :disabled="!editable"
+                :value="(detalle[campo.key] !== null && detalle[campo.key] !== undefined) ? detalle[campo.key] : ''"
+                @change="actualizarCampoProducto(detalle.producto_id, campo.key, $event.target.value, campo.tipo)"
+                placeholder="—"
+                :class="editable ? 'focus:bg-white focus:ring-1 focus:ring-blue-300' : 'cursor-default'"
+                class="w-full bg-transparent font-mono text-xs rounded px-1 py-0.5 outline-none disabled:text-gray-700"
+              >
             </div>
           </template>
         </div>
@@ -541,9 +636,11 @@ function productosApp() {
     ...DEFAULTS_PARAMS,
     q: '',
     categoriaFiltro: '',
+    proveedorFiltro: '',  // id del proveedor (string para mantener el value del <select>)
     soloMarcados: false,
     productos: [],
     categorias: [],
+    proveedores: [],
     totalMarcados: null,
     detalle: null,
     origen: null,
@@ -552,9 +649,23 @@ function productosApp() {
     nuevoCostoMonto: null,
     snapshots: [],
     mostrarHistorial: false,
+    // Modo edicion global (off por defecto: protege contra cambios accidentales)
+    editable: false,
+    // Estado de guardado por (producto_id + ':' + campo) -> 'saving' | 'ok' | 'error'
+    saving: {},
+    // Persistir preferencia de "editable" en el navegador
+    cargarEditable() {
+      try { this.editable = localStorage.getItem('editable') === '1'; } catch (_) {}
+    },
+    guardarEditable() {
+      try { localStorage.setItem('editable', this.editable ? '1' : '0'); } catch (_) {}
+    },
 
     async init() {
+      this.cargarEditable();
+      this.$watch('editable', () => this.guardarEditable());
       await this.cargarCategorias();
+      await this.cargarProveedores();
       await this.cargar();
       // Re-cargar detalle si cambian parametros y hay uno abierto
       this.$watch('tc', () => this.refrescarDetalle());
@@ -575,10 +686,16 @@ function productosApp() {
       this.totalMarcados = this.categorias.reduce((s, c) => s + (c.marcados || 0), 0);
     },
 
+    async cargarProveedores() {
+      const r = await fetch('/api/proveedores');
+      this.proveedores = await r.json();
+    },
+
     async cargar() {
       const params = new URLSearchParams();
       if (this.q) params.set('q', this.q);
       if (this.categoriaFiltro) params.set('categoria', this.categoriaFiltro);
+      if (this.proveedorFiltro) params.set('proveedor_id', this.proveedorFiltro);
       if (this.soloMarcados) params.set('marcados', 'true');
       params.set('limit', '1000');
       const r = await fetch('/api/productos?' + params.toString());
@@ -596,6 +713,32 @@ function productosApp() {
       await this.cargarCategorias();
     },
 
+    // Abre el archivo origen en una ventana popup (no en pestana) con tamano
+    // razonable para visor PDF. Reusa la misma ventana entre clicks pero
+    // fuerza navegacion a la nueva URL (Chrome a veces no recarga al reusar).
+    // Si el navegador bloquea popups, cae a tab nueva.
+    abrirOrigenEnVentana(url) {
+      const NAME = 'cotizacion_origen';
+      const w = Math.min(1100, Math.round(window.screen.availWidth * 0.7));
+      const h = Math.min(1200, Math.round(window.screen.availHeight * 0.9));
+      const left = Math.round((window.screen.availWidth - w) / 2);
+      const top = Math.round((window.screen.availHeight - h) / 2);
+      const features = `popup=yes,width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+      const ventana = window.open(url, NAME, features);
+      if (!ventana) {
+        window.open(url, '_blank');
+        return;
+      }
+      // Forzar navegacion a la nueva URL aun si la ventana ya existia
+      try {
+        const actual = ventana.location.href;
+        if (actual !== url && !actual.endsWith(url)) {
+          ventana.location.replace(url);
+        }
+      } catch (_) { /* cross-origin u otra restriccion: ignorar */ }
+      ventana.focus();
+    },
+
     async actualizarCategoria(p, valor) {
       const v = (valor || '').trim();
       p.categoria = v || null;
@@ -606,6 +749,53 @@ function productosApp() {
       });
       await this.cargarCategorias();
       if (this.categoriaFiltro) await this.cargar();
+    },
+
+    // Actualiza un campo del producto desde cualquier input editable.
+    // Strings vacios: "" -> backend lo trata como limpiar.
+    // Numericos vacios: null. Numero invalido: ignora.
+    // Trackea el estado en this.saving[key] para feedback visual.
+    async actualizarCampoProducto(producto_id, campo, valor_raw, tipo) {
+      if (!this.editable) return;  // safety: el toggle global controla acceso
+      const key = producto_id + ':' + campo;
+      let valor;
+      if (tipo === 'number') {
+        if (valor_raw === '' || valor_raw === null || valor_raw === undefined) {
+          valor = null;
+        } else {
+          valor = Number(valor_raw);
+          if (Number.isNaN(valor)) return;
+        }
+      } else {
+        valor = valor_raw ?? '';
+      }
+      this.saving[key] = 'saving';
+      try {
+        const r = await fetch('/api/productos/' + producto_id, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [campo]: valor }),
+        });
+        if (!r.ok) {
+          this.saving[key] = 'error';
+          console.error('PATCH fallo', campo, valor, r.status);
+          return;
+        }
+        // Sincronizar el objeto detalle y la fila en la grilla
+        if (this.detalle && this.detalle.producto_id === producto_id) {
+          this.detalle[campo] = valor;
+        }
+        const fila = this.productos.find(x => x.id === producto_id);
+        if (fila) fila[campo] = valor;
+        this.saving[key] = 'ok';
+        // Auto-limpiar el indicador OK despues de 1.5s
+        setTimeout(() => {
+          if (this.saving[key] === 'ok') delete this.saving[key];
+        }, 1500);
+      } catch (e) {
+        this.saving[key] = 'error';
+        console.error('PATCH error', campo, e);
+      }
     },
 
     async manejarCambioCategoria(p, select) {
@@ -659,13 +849,24 @@ function productosApp() {
         this.origen = null;
         this.snapshots = [];
         this.mostrarHistorial = false;
+        // Marca cual es el producto que estamos esperando. Si el usuario
+        // cambia de producto antes de que el fetch responda, descartamos
+        // la respuesta vieja comparando contra este valor.
+        this._origenSolicitadoPara = producto_id;
         await this.aplicarParamsDeSnapshot(producto_id);
-        // Cargar origen en paralelo, no bloquea
-        fetch(`/api/productos/${producto_id}/origen`).then(r => r.json()).then(o => {
-          if (this.detalle && this.detalle.producto_id === producto_id) {
-            this.origen = o;
-          }
-        }).catch(() => {});
+        // Cargar origen en paralelo, no bloquea (no esperamos a que termine)
+        fetch(`/api/productos/${producto_id}/origen`)
+          .then(r => r.json())
+          .then(o => {
+            if (this._origenSolicitadoPara === producto_id) {
+              this.origen = o;
+            }
+          })
+          .catch(() => {
+            if (this._origenSolicitadoPara === producto_id) {
+              this.origen = { existe: false, razon: 'error de red al consultar origen' };
+            }
+          });
       }
 
       const params = new URLSearchParams();

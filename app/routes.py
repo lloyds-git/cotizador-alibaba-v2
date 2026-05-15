@@ -10,7 +10,7 @@ from sqlalchemy import func, Integer, case, cast
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.modelos import Producto, ArancelOverride, CostoAdicional, CotizacionSnapshot
+from app.modelos import Producto, Proveedor, ArancelOverride, CostoAdicional, CotizacionSnapshot
 
 router = APIRouter()
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -42,6 +42,17 @@ class ActualizarBody(BaseModel):
     marcado_cotizar: bool | None = None
     categoria: str | None = None
     subcategoria: str | None = None
+    material: str | None = None
+    medidas: str | None = None
+    peso_kg: float | None = None
+    color: str | None = None
+    moq: str | None = None
+    packing: str | None = None
+    carton_dims: str | None = None
+    cbm: float | None = None
+    pzas_20ft: int | None = None
+    pzas_40hq: int | None = None
+    lead_time: str | None = None
 
 
 class MarcarBulkBody(BaseModel):
@@ -104,6 +115,27 @@ def listar_productos(
     }
 
 
+@router.get("/api/proveedores")
+def listar_proveedores(db: SesionDep):
+    """Devuelve proveedores con conteo de productos. Solo lista los que tienen
+    al menos 1 producto (para evitar opciones inutiles en el filtro)."""
+    filas = (
+        db.query(
+            Proveedor.id,
+            Proveedor.nombre,
+            func.count(Producto.id).label("total"),
+        )
+        .join(Producto, Producto.proveedor_id == Proveedor.id)
+        .group_by(Proveedor.id, Proveedor.nombre)
+        .order_by(Proveedor.nombre)
+        .all()
+    )
+    return [
+        {"id": pid, "nombre": nombre, "total": int(total)}
+        for pid, nombre, total in filas
+    ]
+
+
 @router.get("/api/categorias")
 def listar_categorias(db: SesionDep):
     """Devuelve categorias con total y cuantos marcados, ordenadas por total desc."""
@@ -161,95 +193,173 @@ def marcar_bulk(body: MarcarBulkBody, db: SesionDep):
     return {"ok": True, "afectados": n}
 
 
-@router.get("/api/productos/{producto_id}/origen")
-def origen_cotizacion(producto_id: int, db: SesionDep):
-    """Devuelve metadatos del archivo origen (PDF/xlsx) que origino al
-    producto, cruzando el archivo_pdf del proveedor (intermedio) contra
-    data/manifest_archivos.json.
+def _pdf_ingest_dir() -> Path:
+    """Carpeta de PDFs a procesar (matchea el helper en app/cli.py)."""
+    import os
+    proyecto = Path(__file__).parent.parent
+    nombre = os.environ.get("PDF_INGEST_DIR") or "indigest-pdf"
+    p = Path(nombre)
+    return p if p.is_absolute() else proyecto / p
 
-    Devuelve {existe: bool, canonico, ruta, tipo, ver_url} para que el
-    frontend decida si embeber, abrir en nueva pestana o solo enlazar.
+
+def _localizar_origen(p: Producto) -> dict | None:
+    """Devuelve {ruta: Path, tipo: '.pdf'|'.xlsx'|..., fuente: str} si encuentra
+    el archivo original del producto. Estrategia:
+      1. Buscar archivo_pdf directamente en PDF_INGEST_DIR (flujo nuevo).
+      2. Si no, caer al manifest legacy (data/manifest_archivos.json).
+    Devuelve None si no se localiza.
     """
-    import json as _json
-
-    p = db.get(Producto, producto_id)
-    if not p:
-        raise HTTPException(404, "Producto no existe")
-
-    intermedio_nombre = (p.proveedor.archivo_pdf or "") if p.proveedor else ""
+    archivo = (p.proveedor.archivo_pdf or "") if p.proveedor else ""
+    if not archivo:
+        return None
     proyecto = Path(__file__).parent.parent
-    manifest_path = proyecto / "data" / "manifest_archivos.json"
 
-    if not manifest_path.exists() or not intermedio_nombre:
+    # Estrategia 1: PDF_INGEST_DIR (flujo nuevo, .meta.json guarda el PDF original)
+    candidato = _pdf_ingest_dir() / archivo
+    if candidato.exists():
         return {
-            "existe": False,
-            "razon": "No hay manifest o producto sin archivo_pdf",
-            "intermedio": intermedio_nombre,
+            "ruta": candidato,
+            "canonico": str(candidato.relative_to(proyecto)).replace("\\", "/"),
+            "tipo": candidato.suffix.lower(),
+            "fuente": "pdf_ingest_dir",
         }
 
-    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
-    # Buscar entrada cuyo `intermedio` coincida con archivo_pdf (sin extension
-    # o con .xlsx)
-    base_busqueda = intermedio_nombre.lower().replace(".xlsx", "")
-    encontrada = None
-    for e in manifest.get("entradas", []):
-        inter = (e.get("intermedio") or "").lower().replace(".xlsx", "")
-        if inter and (inter == base_busqueda or base_busqueda in inter or inter in base_busqueda):
-            encontrada = e
-            break
-
-    if encontrada is None:
-        return {
-            "existe": False,
-            "razon": "No se encontro origen en manifest",
-            "intermedio": intermedio_nombre,
-        }
-
-    canonico = encontrada["canonico"]
-    ruta_archivo = proyecto / canonico
-    if not ruta_archivo.exists():
-        return {
-            "existe": False,
-            "razon": "Manifest apunta a archivo que ya no existe",
-            "canonico": canonico,
-        }
-
-    return {
-        "existe": True,
-        "canonico": canonico,
-        "tipo": encontrada["tipo"],
-        "ver_url": f"/cotizacion-original/{producto_id}",
-        "miembros": encontrada.get("miembros", [canonico]),
-    }
-
-
-@router.get("/cotizacion-original/{producto_id}")
-def ver_cotizacion_original(producto_id: int, db: SesionDep):
-    """Sirve el archivo origen del producto (PDF inline, xlsx descarga)."""
+    # Estrategia 2: manifest legacy
     import json as _json
-
-    p = db.get(Producto, producto_id)
-    if not p:
-        raise HTTPException(404, "Producto no existe")
-
-    intermedio_nombre = (p.proveedor.archivo_pdf or "") if p.proveedor else ""
-    proyecto = Path(__file__).parent.parent
     manifest_path = proyecto / "data" / "manifest_archivos.json"
-    if not manifest_path.exists() or not intermedio_nombre:
-        raise HTTPException(404, "No hay manifest o sin intermedio asociado")
-
-    manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
-    base = intermedio_nombre.lower().replace(".xlsx", "")
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError):
+        return None
+    base = archivo.lower().replace(".xlsx", "")
     for e in manifest.get("entradas", []):
         inter = (e.get("intermedio") or "").lower().replace(".xlsx", "")
         if inter and (inter == base or base in inter or inter in base):
             canonico = e["canonico"]
             ruta = proyecto / canonico
             if ruta.exists():
-                media = "application/pdf" if e["tipo"] == ".pdf" else "application/octet-stream"
-                return FileResponse(str(ruta), filename=canonico, media_type=media)
-            break
-    raise HTTPException(404, "Archivo origen no localizado")
+                return {
+                    "ruta": ruta,
+                    "canonico": canonico,
+                    "tipo": e.get("tipo") or ruta.suffix.lower(),
+                    "fuente": "manifest",
+                }
+            return None
+    return None
+
+
+@router.get("/api/productos/{producto_id}/origen")
+def origen_cotizacion(producto_id: int, db: SesionDep):
+    """Devuelve metadatos del archivo origen (PDF/xlsx) del producto.
+
+    Estrategia:
+      1. archivo_pdf del proveedor + PDF_INGEST_DIR (flujo nuevo).
+      2. manifest legacy (data/manifest_archivos.json) como fallback.
+    """
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+
+    archivo = (p.proveedor.archivo_pdf or "") if p.proveedor else ""
+    if not archivo:
+        return {"existe": False, "razon": "Proveedor sin archivo_pdf asociado"}
+
+    info = _localizar_origen(p)
+    if info is None:
+        return {
+            "existe": False,
+            "razon": f"No se encontro el archivo '{archivo}' en {_pdf_ingest_dir().name}/ ni en manifest",
+            "archivo_pdf": archivo,
+        }
+    # PDFs van al visor HTML wrapper (fuerza render inline aunque el navegador
+    # tenga "descargar PDFs" activado). Otros tipos van directo al archivo.
+    if info["tipo"] == ".pdf":
+        ver_url = f"/visor-cotizacion/{producto_id}"
+    else:
+        ver_url = f"/cotizacion-original/{producto_id}"
+    return {
+        "existe": True,
+        "canonico": info["canonico"],
+        "tipo": info["tipo"],
+        "fuente": info["fuente"],
+        "ver_url": ver_url,
+    }
+
+
+@router.get("/visor-cotizacion/{producto_id}", response_class=HTMLResponse)
+def visor_cotizacion(producto_id: int, db: SesionDep):
+    """HTML wrapper que renderiza el PDF en un <embed> a tamano completo.
+
+    Sirve para forzar visualizacion inline aun cuando el navegador del usuario
+    tiene configurado "siempre descargar PDFs". El embed lo trata como recurso
+    embebido, no como navegacion top-level.
+    """
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+    info = _localizar_origen(p)
+    if info is None:
+        raise HTTPException(404, "Archivo origen no localizado")
+    nombre = info["ruta"].name
+    sku = (p.sku or f"producto-{p.id}")
+    titulo = f"{sku} — {nombre}"
+    pdf_url = f"/cotizacion-original/{producto_id}"
+    descarga_url = f"/cotizacion-original/{producto_id}?descargar=1"
+    html = f"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>{titulo}</title>
+  <style>
+    html, body {{ margin:0; padding:0; height:100%; background:#222; font-family:system-ui,sans-serif; }}
+    .barra {{ background:#111; color:#eee; padding:6px 12px; display:flex; gap:12px; align-items:center; font-size:12px; }}
+    .barra .titulo {{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.85; }}
+    .barra a {{ color:#7cb8ff; text-decoration:none; padding:2px 8px; border:1px solid #335; border-radius:4px; }}
+    .barra a:hover {{ background:#223; }}
+    embed, iframe {{ width:100%; height:calc(100% - 32px); border:0; }}
+  </style>
+</head>
+<body>
+  <div class="barra">
+    <span class="titulo" title="{titulo}">{titulo}</span>
+    <a href="{descarga_url}" title="Descargar PDF">⬇ Descargar</a>
+    <a href="javascript:window.close()" title="Cerrar ventana">✕ Cerrar</a>
+  </div>
+  <embed src="{pdf_url}" type="application/pdf">
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
+@router.get("/cotizacion-original/{producto_id}")
+def ver_cotizacion_original(producto_id: int, db: SesionDep, descargar: int = 0):
+    """Sirve el archivo origen del producto.
+
+    PDFs van con Content-Disposition: inline para que se rendericen en el
+    visor del navegador en vez de descargarse. xlsx/otros van como attachment.
+    """
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+
+    info = _localizar_origen(p)
+    if info is None:
+        raise HTTPException(404, "Archivo origen no localizado")
+    ruta = info["ruta"]
+    tipo = info["tipo"]
+    if tipo == ".pdf":
+        nombre_safe = ruta.name.replace('"', '\\"')
+        # ?descargar=1 fuerza attachment; default es inline para que se
+        # renderice en el <embed> del visor.
+        disposition = "attachment" if descargar else "inline"
+        return FileResponse(
+            str(ruta),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'{disposition}; filename="{nombre_safe}"'},
+        )
+    return FileResponse(str(ruta), filename=ruta.name, media_type="application/octet-stream")
 
 
 @router.get("/api/productos/{producto_id}/cotizar")
@@ -388,6 +498,31 @@ def actualizar(producto_id: int, body: ActualizarBody, db: SesionDep):
         p.categoria = body.categoria.strip() or None
     if body.subcategoria is not None:
         p.subcategoria = body.subcategoria.strip() or None
+    # Campos del producto editables desde el panel de detalle.
+    # Para strings: cadena vacia significa "limpiar" (None en BD).
+    # Para numericos: usar None explicito en el JSON para limpiar.
+    if body.material is not None:
+        p.material = body.material.strip() or None
+    if body.medidas is not None:
+        p.medidas = body.medidas.strip() or None
+    if body.peso_kg is not None:
+        p.peso_kg = body.peso_kg
+    if body.color is not None:
+        p.color = body.color.strip() or None
+    if body.moq is not None:
+        p.moq = body.moq.strip() or None
+    if body.packing is not None:
+        p.packing = body.packing.strip() or None
+    if body.carton_dims is not None:
+        p.carton_dims = body.carton_dims.strip() or None
+    if body.cbm is not None:
+        p.cbm = body.cbm
+    if body.pzas_20ft is not None:
+        p.pzas_20ft = body.pzas_20ft
+    if body.pzas_40hq is not None:
+        p.pzas_40hq = body.pzas_40hq
+    if body.lead_time is not None:
+        p.lead_time = body.lead_time.strip() or None
     db.commit()
     return {"ok": True}
 
@@ -409,9 +544,9 @@ def home(request: Request, db: SesionDep):
         key=lambda r: (r["categoria"] is None, -r["total"]),
     )
     return TEMPLATES.TemplateResponse(
+        request,
         "productos.html",
         {
-            "request": request,
             "productos": productos,
             "categorias": categorias,
         },
@@ -1098,8 +1233,9 @@ def listar_cotizaciones_global(
 def pagina_cotizaciones(request: Request, db: SesionDep):
     """Pagina con historial global de cotizaciones (todos los snapshots)."""
     return TEMPLATES.TemplateResponse(
+        request,
         "cotizaciones.html",
-        {"request": request},
+        {},
     )
 
 
@@ -1115,6 +1251,7 @@ def pagina_aranceles(request: Request, db: SesionDep):
         [c for (c,) in cats if c and c != "_descartar"]
     )
     return TEMPLATES.TemplateResponse(
+        request,
         "aranceles.html",
-        {"request": request, "categorias_disponibles": categorias},
+        {"categorias_disponibles": categorias},
     )
