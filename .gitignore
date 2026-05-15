@@ -5,6 +5,10 @@ _adobe_extract_*/
 _intermedio_*.xlsx
 formato-hd-*.xlsx
 
+# --- Carpeta de PDFs a ingestar (PDFs + metadata generada) ---
+# El contenido es del cliente; no se versiona. La carpeta puede existir vacia.
+indigest-pdf/
+
 # --- Cotizaciones origen (PDFs/xlsx descargados) ---
 # No versionar archivos de proveedores; son grandes y privados
 *.pdf
