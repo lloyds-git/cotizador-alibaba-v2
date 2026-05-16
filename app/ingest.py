@@ -11,6 +11,7 @@ Estrategia:
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -19,6 +20,72 @@ import openpyxl
 from sqlalchemy.orm import Session
 
 from app.modelos import Proveedor, Producto, Foto
+
+
+# Sufijos / palabras corporativas que aparecen variablemente cuando Claude
+# extrae el seller del PDF (a veces con LTD, a veces sin; con o sin coma,
+# con "Trade", "Trading", "International", etc.). Se removen al normalizar
+# para que "Shenzhen Dongtai Sponge Product CO., LTD" matchee con
+# "Shenzhen Dongtai Sponge Product CO." y no se duplique el proveedor.
+_PALABRAS_CORPORATIVAS = (
+    "co", "corp", "ltd", "inc", "llc", "company", "corporation", "limited",
+    "trade", "trading", "import", "imports", "export", "exports",
+    "international", "intl", "group", "enterprise", "enterprises",
+    "industry", "industrial", "industries", "manufacturing", "mfg",
+    "products", "product", "technology", "tech", "material", "materials",
+)
+# Patron precompilado: word boundary + palabra + opcional punto/coma
+_RE_PALABRAS = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _PALABRAS_CORPORATIVAS) + r")\b\.?,?",
+    re.IGNORECASE,
+)
+_RE_PUNTUACION = re.compile(r"[,.()\-&]+")
+_RE_WS = re.compile(r"\s+")
+
+
+def normalizar_nombre_proveedor(nombre: str) -> str:
+    """Normaliza un nombre de proveedor para hacer matching tolerante.
+
+    Quita sufijos corporativos (Co., Ltd, Trade Co., Inc, etc.), puntuacion
+    y normaliza espacios + case. Resultado deterministico, sin fuzzy
+    matching: dos nombres con la misma forma normalizada matchean.
+
+    Ejemplos:
+      "Shenzhen Dongtai Sponge Product CO., LTD" -> "shenzhen dongtai sponge"
+      "Shenzhen Dongtai Sponge Product CO."       -> "shenzhen dongtai sponge"
+      "ZHANGJIAGANG KINGTALE INTL TRADING CO.,LTD"-> "zhangjiagang kingtale"
+    """
+    if not nombre:
+        return ""
+    s = nombre.lower()
+    s = _RE_PUNTUACION.sub(" ", s)
+    s = _RE_PALABRAS.sub(" ", s)
+    s = _RE_WS.sub(" ", s).strip()
+    return s
+
+
+def buscar_proveedor_existente(
+    session: Session, nombre: str
+) -> Proveedor | None:
+    """Busca un proveedor existente con match tolerante.
+
+    Estrategia:
+      1. Match exacto por nombre (rapido, indice implicito).
+      2. Si no, normaliza el candidato y compara contra todos los
+         proveedores en BD por su forma normalizada.
+
+    Devuelve None si ningun proveedor coincide tras normalizar.
+    """
+    prov = session.query(Proveedor).filter_by(nombre=nombre).first()
+    if prov:
+        return prov
+    nombre_norm = normalizar_nombre_proveedor(nombre)
+    if not nombre_norm:
+        return None
+    for p in session.query(Proveedor).all():
+        if normalizar_nombre_proveedor(p.nombre) == nombre_norm:
+            return p
+    return None
 
 
 def _cargar_meta(xlsx_path: str) -> dict:
@@ -168,7 +235,7 @@ def ingestar_xlsx_intermedio(
     nombre_proveedor = resolver_nombre_proveedor(xlsx_path, fallback=nombre_proveedor)
     archivo_pdf = resolver_archivo_pdf(xlsx_path)
 
-    prov = session.query(Proveedor).filter_by(nombre=nombre_proveedor).first()
+    prov = buscar_proveedor_existente(session, nombre_proveedor)
     if prov is None:
         prov = Proveedor(
             nombre=nombre_proveedor,
