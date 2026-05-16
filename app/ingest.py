@@ -254,6 +254,13 @@ def ingestar_xlsx_intermedio(
 
     import hashlib
 
+    # Tracking de SKUs ya usados EN ESTE xlsx para detectar colisiones
+    # entre filas (caso comun: proveedor lista 3 tiers de pricing con el
+    # mismo SKU real, ej. PD0421 con MOQ 500/1000/2000 y FOB 5.6/5.2/5.0).
+    # Sin esto, el UNIQUE(proveedor_id, sku) hace UPDATE en cada colision
+    # y solo queda la ultima fila.
+    skus_usados: dict[str, int] = {}
+
     nuevos = 0
     for fila in range(2, ws.max_row + 1):
         sku = ws.cell(fila, COL_SKU).value or ""
@@ -282,6 +289,26 @@ def ingestar_xlsx_intermedio(
             h = hashlib.md5(clave.encode("utf-8")).hexdigest()[:10]
             sku = f"AUTO-{h}"
             sku_sintetico = True
+
+        # Si el SKU ya fue usado en una fila previa del MISMO xlsx, no es
+        # un duplicado real (re-ingest del mismo archivo) sino una variante
+        # con el mismo codigo: suffixar con hash de campos diferenciadores.
+        # Hash deterministico => idempotente entre re-ingests. La primera
+        # ocurrencia mantiene el SKU base; las subsecuentes reciben sufijo.
+        if sku in skus_usados:
+            clave_var = "|".join(
+                [desc, medidas, material, f"{fob_usd if fob_usd is not None else ''}"]
+            )
+            h_var = hashlib.md5(clave_var.encode("utf-8")).hexdigest()[:6]
+            sku_propuesto = f"{sku}-{h_var}"
+            # Fallback si dos filas son TRULY identicas (mismo desc+medidas
+            # +material+fob): contador secuencial para no chocar.
+            contador = 2
+            while sku_propuesto in skus_usados:
+                sku_propuesto = f"{sku}-{h_var}-V{contador}"
+                contador += 1
+            sku = sku_propuesto
+        skus_usados[sku] = skus_usados.get(sku, 0) + 1
 
         prod = session.query(Producto).filter_by(
             proveedor_id=prov.id, sku=sku
