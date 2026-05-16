@@ -263,13 +263,23 @@ def ingestar_xlsx_intermedio(
         if not (sku or desc):
             continue
 
-        # Si no hay SKU real, generamos uno sintetico determinista a partir
-        # de la descripcion. Mantiene idempotencia (re-ingestar produce el
-        # mismo SKU) y evita la colision de UNIQUE(proveedor_id, sku='')
-        # cuando hay varios productos sin SKU del mismo proveedor.
+        # Leemos los campos diferenciadores ahora para poder usarlos en
+        # el hash del SKU sintetico si no hay SKU real.
+        medidas = str(ws.cell(fila, COL_MEDIDAS).value or "").strip()
+        material = str(ws.cell(fila, COL_MATERIAL).value or "").strip()
+        fob_usd = _to_float(ws.cell(fila, COL_FOB).value)
+
+        # Si no hay SKU real, generamos uno sintetico determinista. El hash
+        # incluye desc + medidas + material + fob para que VARIANTES con el
+        # mismo nombre (ej. "PET Carrier" 10kg vs 15kg con distinta talla y
+        # precio) no colisionen al mismo AUTO-{hash} y se sobreescriban por
+        # el UNIQUE(proveedor_id, sku). Sigue siendo deterministico:
+        # re-ingestar el mismo xlsx produce los mismos AUTO-* y actualiza
+        # en vez de duplicar.
         sku_sintetico = False
         if not sku:
-            h = hashlib.md5(desc.encode("utf-8")).hexdigest()[:10]
+            clave = "|".join([desc, medidas, material, f"{fob_usd if fob_usd is not None else ''}"])
+            h = hashlib.md5(clave.encode("utf-8")).hexdigest()[:10]
             sku = f"AUTO-{h}"
             sku_sintetico = True
 
@@ -283,9 +293,9 @@ def ingestar_xlsx_intermedio(
             session.add(prod)
 
         prod.descripcion = desc
-        prod.fob_usd = _to_float(ws.cell(fila, COL_FOB).value)
-        prod.medidas = str(ws.cell(fila, COL_MEDIDAS).value or "").strip()
-        prod.material = str(ws.cell(fila, COL_MATERIAL).value or "").strip()
+        prod.fob_usd = fob_usd
+        prod.medidas = medidas
+        prod.material = material
         prod.peso_kg = _to_float(ws.cell(fila, COL_PESO).value)
         prod.color = str(ws.cell(fila, COL_COLOR).value or "").strip()
         prod.moq = str(ws.cell(fila, COL_MOQ).value or "").strip()
