@@ -24,6 +24,10 @@ class Producto(Base):
     __tablename__ = "productos"
     __table_args__ = (
         UniqueConstraint("proveedor_id", "sku", name="uq_proveedor_sku"),
+        # AUTOINCREMENT: SQLite no reusa ids despues de DELETE.
+        # Protege referencias externas (exports xlsx, cotizaciones guardadas,
+        # snapshots manuales) contra colisiones tras borrar+re-ingestar.
+        {"sqlite_autoincrement": True},
     )
 
     id = Column(Integer, primary_key=True)
