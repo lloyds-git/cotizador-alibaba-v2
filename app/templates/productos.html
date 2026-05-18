@@ -577,15 +577,32 @@
             <div class="text-xs uppercase font-semibold text-gray-600 mb-2">
               Historial de cotizaciones (<span x-text="snapshots.length"></span>)
             </div>
+            <!-- Banner: hay snapshots con datos desactualizados -->
+            <div x-show="snapshots.some(s => s.es_stale)"
+                 class="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded p-2 mb-2 flex items-center justify-between gap-2">
+              <span>
+                ⚠ Hay snapshots con datos desactualizados (producto editado despues del snapshot).
+              </span>
+              <button type="button" @click="guardarSnapshot()"
+                      class="underline font-semibold whitespace-nowrap">
+                Crear snapshot con datos actuales
+              </button>
+            </div>
             <template x-if="snapshots.length === 0">
               <div class="text-xs text-gray-400">Sin snapshots todavia. Guarda uno con el boton de arriba o exporta el HD por categoria.</div>
             </template>
             <template x-for="s in snapshots" :key="s.id">
-              <div class="bg-white border rounded p-2 mb-2 text-xs">
+              <div class="bg-white border rounded p-2 mb-2 text-xs"
+                   :class="s.es_stale ? 'border-amber-300' : ''">
                 <div class="flex justify-between items-baseline">
                   <span class="font-mono text-[11px] text-gray-500"
                         x-text="new Date(s.creado_en).toLocaleString()"></span>
                   <span>
+                    <span x-show="s.es_stale"
+                          class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-[10px] mr-1"
+                          title="El producto fue editado despues de este snapshot. Los inputs del motor pueden no coincidir.">
+                      ⚠ stale
+                    </span>
                     <span class="bg-purple-100 text-purple-800 px-2 py-0.5 rounded text-[10px]"
                           x-text="s.origen"></span>
                     <button type="button" @click="borrarSnapshot(s)"
@@ -1023,6 +1040,13 @@ const DEFAULTS_PARAMS = {
   gastosAduanalesPct: 5,
 };
 
+// Campos del Producto que entran al motor de cotizacion (14 pasos).
+// Editar cualquiera de estos refresca el panel y re-evalua snapshots.
+const CAMPOS_MOTOR = [
+  'fob_usd', 'cbm', 'pzas_20ft', 'pzas_40hq', 'pzas_caja',
+  'peso_kg', 'categoria', 'subcategoria',
+];
+
 function productosApp() {
   return {
     ...DEFAULTS_PARAMS,
@@ -1200,6 +1224,13 @@ function productosApp() {
         const fila = this.productos.find(x => x.id === producto_id);
         if (fila) fila[campo] = valor;
         this.saving[key] = 'ok';
+        // Si el campo entra al motor de cotizacion, refrescar los 14 pasos
+        // y la lista de snapshots (para re-evaluar es_stale).
+        if (this.detalle && this.detalle.producto_id === producto_id
+            && CAMPOS_MOTOR.includes(campo)) {
+          await this.refrescarDetalle();
+          await this.cargarSnapshots();
+        }
         // Auto-limpiar el indicador OK despues de 1.5s
         setTimeout(() => {
           if (this.saving[key] === 'ok') delete this.saving[key];
@@ -1660,6 +1691,9 @@ function productosApp() {
           const aplicado = (j.aplicados || []).find(a => a.producto_id === this.detalle.producto_id);
           if (aplicado) {
             this.detalle.cbm = aplicado.cbm_nuevo;
+            // CBM cambio -> el motor recalcula y los snapshots quedan stale.
+            await this.refrescarDetalle();
+            await this.cargarSnapshots();
           }
         }
         // Quitamos los aplicados de la lista para que la UI quede consistente
@@ -1725,7 +1759,11 @@ function productosApp() {
         await this.cargar();
         if (this.detalle) {
           const a = (j.aplicados || []).find(a => a.producto_id === this.detalle.producto_id);
-          if (a) this.detalle.pzas_40hq = a.pzas_40hq_nuevo;
+          if (a) {
+            this.detalle.pzas_40hq = a.pzas_40hq_nuevo;
+            await this.refrescarDetalle();
+            await this.cargarSnapshots();
+          }
         }
         const aplicadosIds = new Set((j.aplicados || []).map(a => a.producto_id));
         this.pzas40Sugerencias = this.pzas40Sugerencias.filter(s => !aplicadosIds.has(s.producto_id));
@@ -1755,6 +1793,8 @@ function productosApp() {
           this.detalle.pzas_40hq = a.pzas_40hq_nuevo;
           this.saving[key] = 'ok';
           await this.cargar();
+          await this.refrescarDetalle();
+          await this.cargarSnapshots();
         } else {
           this.saving[key] = 'error';
           const motivo = (j.sin_cambio && j.sin_cambio[0] && j.sin_cambio[0].motivo)
@@ -1788,6 +1828,8 @@ function productosApp() {
           this.detalle.cbm = aplicado.cbm_nuevo;
           this.saving[key] = 'ok';
           await this.cargar();  // refresca la columna CBM de la tabla
+          await this.refrescarDetalle();
+          await this.cargarSnapshots();
         } else {
           this.saving[key] = 'error';
           const motivo = (j.sin_cambio && j.sin_cambio[0] && j.sin_cambio[0].motivo)

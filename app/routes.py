@@ -1337,7 +1337,12 @@ class SnapshotBody(BaseModel):
     notas: str | None = None
 
 
-def _snapshot_to_dict(s: CotizacionSnapshot) -> dict:
+def _snapshot_to_dict(s: CotizacionSnapshot, producto: Producto | None = None) -> dict:
+    """Serializa un snapshot. Si se pasa `producto`, calcula `es_stale`:
+    True cuando el producto fue modificado despues de creado el snapshot."""
+    es_stale = False
+    if producto is not None and producto.actualizado_en and s.creado_en:
+        es_stale = producto.actualizado_en > s.creado_en
     return {
         "id": s.id,
         "producto_id": s.producto_id,
@@ -1362,6 +1367,7 @@ def _snapshot_to_dict(s: CotizacionSnapshot) -> dict:
         "margen_real_pct": s.margen_real_pct,
         "archivo_exportado": s.archivo_exportado,
         "notas": s.notas,
+        "es_stale": es_stale,
     }
 
 
@@ -1491,7 +1497,7 @@ def listar_snapshots(producto_id: int, db: SesionDep):
         .order_by(CotizacionSnapshot.creado_en.desc())
         .all()
     )
-    return {"items": [_snapshot_to_dict(s) for s in snaps]}
+    return {"items": [_snapshot_to_dict(s, p) for s in snaps]}
 
 
 @router.post("/api/productos/{producto_id}/snapshots")
@@ -1512,7 +1518,8 @@ def crear_snapshot_manual(producto_id: int, body: SnapshotBody, db: SesionDep):
         archivo_exportado=body.archivo_exportado,
         notas=body.notas,
     )
-    return _snapshot_to_dict(snap)
+    p = db.get(Producto, producto_id)
+    return _snapshot_to_dict(snap, p)
 
 
 @router.delete("/api/productos/{producto_id}/snapshots/{snapshot_id}")
@@ -1624,7 +1631,7 @@ def listar_cotizaciones_global(
 
     items = []
     for s, p in q.all():
-        d = _snapshot_to_dict(s)
+        d = _snapshot_to_dict(s, p)
         d["sku"] = p.sku
         d["descripcion"] = p.descripcion
         d["categoria"] = p.categoria

@@ -116,3 +116,34 @@ def test_listar_snapshots_orden_desc(cliente, producto):
     assert len(items) == 2
     assert items[0]["notas"] == "segundo"  # mas reciente primero
     assert items[1]["notas"] == "primero"
+
+
+def test_snapshot_recien_creado_no_es_stale(cliente, producto):
+    """Un snapshot recien creado nunca es stale."""
+    s = cliente.post(f"/api/productos/{producto.id}/snapshots", json={
+        "tc": 20, "margen_nuestro_pct": 25, "margen_cliente_pct": 40,
+    }).json()
+    assert s["es_stale"] is False
+
+
+def test_snapshot_es_stale_tras_editar_producto(cliente, producto, db_session):
+    """Si producto.actualizado_en avanza despues del snapshot, queda stale."""
+    import time
+    cliente.post(f"/api/productos/{producto.id}/snapshots", json={
+        "tc": 20, "margen_nuestro_pct": 25, "margen_cliente_pct": 40,
+    })
+    time.sleep(0.05)
+    r = cliente.patch(f"/api/productos/{producto.id}", json={"cbm": 0.08})
+    assert r.status_code == 200
+    items = cliente.get(f"/api/productos/{producto.id}/snapshots").json()["items"]
+    assert len(items) == 1
+    assert items[0]["es_stale"] is True
+
+
+def test_snapshot_no_es_stale_si_producto_no_cambio(cliente, producto):
+    """Si el producto no se toco, el snapshot sigue fresco al listarlo."""
+    cliente.post(f"/api/productos/{producto.id}/snapshots", json={
+        "tc": 20, "margen_nuestro_pct": 25, "margen_cliente_pct": 40,
+    })
+    items = cliente.get(f"/api/productos/{producto.id}/snapshots").json()["items"]
+    assert items[0]["es_stale"] is False
