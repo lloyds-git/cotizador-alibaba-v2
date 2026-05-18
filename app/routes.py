@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 
 from app import db as db_module
 from app.modelos import (
-    Producto, Proveedor, ArancelOverride, CostoAdicional, CotizacionSnapshot,
-    Foto, Categoria, CategoriaKeyword, PatronDescarte,
+    Producto, Proveedor, ArancelOverride, Arancel, CostoAdicional,
+    CotizacionSnapshot, Foto, Categoria, CategoriaKeyword, PatronDescarte,
 )
 from app.clasificador import clasificar_descripcion, invalidar_cache
 from app.ingest import (
@@ -1310,6 +1310,88 @@ def eliminar_arancel(arancel_id: int, db: SesionDep):
     if not o:
         raise HTTPException(404, "Arancel no existe")
     db.delete(o)
+    db.commit()
+    return {"ok": True}
+
+
+# ============================================================
+# Aranceles ESTANDAR (tabla `aranceles`, seedeada desde YAML)
+# Estos son los fallback por (cat, subcat) que antes vivian en
+# app/cotizador/tariffs.py. Editables desde la UI.
+# ============================================================
+
+
+class ArancelEstandarBody(BaseModel):
+    categoria: str
+    subcategoria: str
+    fraccion: str
+    tasa_pct: float
+    nota: str | None = None
+
+
+def _arancel_estandar_to_dict(a: Arancel) -> dict:
+    return {
+        "id": a.id,
+        "categoria": a.categoria,
+        "subcategoria": a.subcategoria,
+        "fraccion": a.fraccion,
+        "tasa_pct": a.tasa_pct,
+        "nota": a.nota,
+    }
+
+
+@router.get("/api/aranceles-estandar")
+def listar_aranceles_estandar(db: SesionDep):
+    rows = (
+        db.query(Arancel)
+        .order_by(Arancel.categoria, Arancel.subcategoria)
+        .all()
+    )
+    return {"items": [_arancel_estandar_to_dict(a) for a in rows]}
+
+
+@router.post("/api/aranceles-estandar")
+def crear_arancel_estandar(body: ArancelEstandarBody, db: SesionDep):
+    cat = body.categoria.strip()
+    sub = body.subcategoria.strip()
+    if not cat or not sub:
+        raise HTTPException(400, "categoria y subcategoria son obligatorias")
+    existe = db.query(Arancel).filter_by(categoria=cat, subcategoria=sub).first()
+    if existe is not None:
+        raise HTTPException(409, f"Ya existe ({cat}, {sub})")
+    a = Arancel(
+        categoria=cat,
+        subcategoria=sub,
+        fraccion=body.fraccion.strip(),
+        tasa_pct=body.tasa_pct,
+        nota=(body.nota or None),
+    )
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    return _arancel_estandar_to_dict(a)
+
+
+@router.patch("/api/aranceles-estandar/{arancel_id}")
+def actualizar_arancel_estandar(arancel_id: int, body: ArancelEstandarBody, db: SesionDep):
+    a = db.get(Arancel, arancel_id)
+    if not a:
+        raise HTTPException(404, "Arancel estandar no existe")
+    a.categoria = body.categoria.strip()
+    a.subcategoria = body.subcategoria.strip()
+    a.fraccion = body.fraccion.strip()
+    a.tasa_pct = body.tasa_pct
+    a.nota = (body.nota or None)
+    db.commit()
+    return _arancel_estandar_to_dict(a)
+
+
+@router.delete("/api/aranceles-estandar/{arancel_id}")
+def eliminar_arancel_estandar(arancel_id: int, db: SesionDep):
+    a = db.get(Arancel, arancel_id)
+    if not a:
+        raise HTTPException(404, "Arancel estandar no existe")
+    db.delete(a)
     db.commit()
     return {"ok": True}
 

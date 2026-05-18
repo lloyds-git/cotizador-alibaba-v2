@@ -1,0 +1,57 @@
+# Fracciones arancelarias estandar por (categoria, subcategoria).
+# Fuente: TIGIE + criterios tipicos para productos de mascotas/hogar/cocina.
+# Editable desde la UI /aranceles. Re-cargar con:
+#   python -m app.cli seed-aranceles            # solo agrega faltantes
+#   python -m app.cli seed-aranceles --reset    # borra todo y re-siembra
+#
+# Las (categoria, subcategoria) aca son las del lookup_tariff
+# (CATEGORIA_A_TARIFA en app/cotizador/adapter.py), NO las categorias
+# del Producto.
+
+aranceles:
+  # ─── Mascotas ──────────────────────────────────────────────────────────
+  - { categoria: Mascotas, subcategoria: Comederos,        fraccion: "3924.10.01", tasa_pct: 15, nota: "plastico mesa/cocina; metal varia" }
+  - { categoria: Mascotas, subcategoria: Bebederos,        fraccion: "3924.10.01", tasa_pct: 15, nota: "plastico; electrico cambia a 8516" }
+  - { categoria: Mascotas, subcategoria: Camas,            fraccion: "9404.90.99", tasa_pct: 20, nota: "articulos de cama y similares" }
+  - { categoria: Mascotas, subcategoria: Cojines,          fraccion: "9404.90.99", tasa_pct: 20, nota: "cojines/almohadas - textil" }
+  - { categoria: Mascotas, subcategoria: Transportadoras,  fraccion: "4202.92.99", tasa_pct: 15, nota: "bolsos/maletas para transporte" }
+  - { categoria: Mascotas, subcategoria: Casetas,          fraccion: "9403.89.99", tasa_pct: 15, nota: "muebles otros materiales" }
+  - { categoria: Mascotas, subcategoria: Jaulas,           fraccion: "7323.99.99", tasa_pct: 15, nota: "alambre/metal" }
+  - { categoria: Mascotas, subcategoria: Juguetes,         fraccion: "9503.00.99", tasa_pct: 0,  nota: "juguetes - exencion" }
+  - { categoria: Mascotas, subcategoria: Higiene,          fraccion: "9603.21.01", tasa_pct: 15, nota: "cepillos/peines" }
+  - { categoria: Mascotas, subcategoria: Aseo,             fraccion: "9603.21.01", tasa_pct: 15, nota: "cepillos/peines" }
+  - { categoria: Mascotas, subcategoria: Arena,            fraccion: "3917.40.99", tasa_pct: 10, nota: "sanitarios plastico" }
+  - { categoria: Mascotas, subcategoria: Sanitarios,       fraccion: "3917.40.99", tasa_pct: 10, nota: "sanitarios plastico" }
+  - { categoria: Mascotas, subcategoria: Correas,          fraccion: "4201.00.01", tasa_pct: 15, nota: "guarniciones para animales" }
+  - { categoria: Mascotas, subcategoria: Collares,         fraccion: "4201.00.01", tasa_pct: 15, nota: "guarniciones para animales" }
+  - { categoria: Mascotas, subcategoria: Vestidos,         fraccion: "6307.90.99", tasa_pct: 20, nota: "textil confeccionado" }
+  - { categoria: Mascotas, subcategoria: Ropa,             fraccion: "6307.90.99", tasa_pct: 20, nota: "textil confeccionado" }
+  - { categoria: Mascotas, subcategoria: Otros,            fraccion: "—",          tasa_pct: 0,  nota: "default - confirmar con agente aduanal" }
+
+  # ─── Cocina ────────────────────────────────────────────────────────────
+  - { categoria: Cocina, subcategoria: Dispensadores,      fraccion: "3924.10.01", tasa_pct: 15, nota: "plastico mesa/cocina" }
+  - { categoria: Cocina, subcategoria: Contenedores,       fraccion: "3924.10.01", tasa_pct: 15, nota: "plastico mesa/cocina" }
+  - { categoria: Cocina, subcategoria: Almacenamiento,     fraccion: "3923.10.99", tasa_pct: 15, nota: "envases plastico" }
+  - { categoria: Cocina, subcategoria: Vajilla,            fraccion: "6912.00.01", tasa_pct: 20, nota: "ceramica/loza; vidrio cambia 7013" }
+  - { categoria: Cocina, subcategoria: Vasos,              fraccion: "7013.37.99", tasa_pct: 15, nota: "vidrio para mesa" }
+  - { categoria: Cocina, subcategoria: Termos,             fraccion: "9617.00.01", tasa_pct: 15, nota: "termos / vacuum flask" }
+  - { categoria: Cocina, subcategoria: Otros,              fraccion: "—",          tasa_pct: 0,  nota: "default - confirmar con agente aduanal" }
+
+  # ─── Hogar ─────────────────────────────────────────────────────────────
+  - { categoria: Hogar, subcategoria: Iluminacion,         fraccion: "9405.10.99", tasa_pct: 15, nota: "lamparas" }
+  - { categoria: Hogar, subcategoria: Bano,                fraccion: "3924.90.99", tasa_pct: 15, nota: "articulos plasticos bano" }
+  - { categoria: Hogar, subcategoria: Climatizacion,       fraccion: "8414.51.99", tasa_pct: 15, nota: "ventiladores; cambia si tiene electronica" }
+  - { categoria: Hogar, subcategoria: Decoracion,          fraccion: "9505.10.99", tasa_pct: 0,  nota: "decoracion varia mucho" }
+  - { categoria: Hogar, subcategoria: Otros,               fraccion: "—",          tasa_pct: 0,  nota: "default - confirmar con agente aduanal" }
+
+  # ─── Hardware / Herramientas ───────────────────────────────────────────
+  - { categoria: Hardware, subcategoria: Herrajes,         fraccion: "8302.42.99", tasa_pct: 15, nota: "herrajes muebles base metal" }
+  - { categoria: Hardware, subcategoria: Tornilleria,      fraccion: "7318.15.99", tasa_pct: 10, nota: "tornillos/pernos hierro/acero" }
+  - { categoria: Hardware, subcategoria: Cerraduras,       fraccion: "8301.40.99", tasa_pct: 15, nota: "cerraduras y candados" }
+  - { categoria: Hardware, subcategoria: Soportes,         fraccion: "8302.50.99", tasa_pct: 15, nota: "soportes y mensulas" }
+  - { categoria: Hardware, subcategoria: Herramientas,     fraccion: "8205.59.99", tasa_pct: 15, nota: "herramientas de mano otros" }
+  - { categoria: Hardware, subcategoria: Otros,            fraccion: "8302.42.99", tasa_pct: 15, nota: "herrajes default - confirmar" }
+
+  # ─── Otros ─────────────────────────────────────────────────────────────
+  - { categoria: Otros, subcategoria: Otros,               fraccion: "—",          tasa_pct: 0,  nota: "default - confirmar con agente aduanal" }
+  - { categoria: Otros, subcategoria: "Sin clasificar",    fraccion: "—",          tasa_pct: 0,  nota: "default - confirmar con agente aduanal" }

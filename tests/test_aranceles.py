@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.cotizador.lookup import resolver_arancel
-from app.modelos import ArancelOverride
+from app.modelos import ArancelOverride, Arancel
 
 
 @pytest.fixture
@@ -83,6 +83,62 @@ def test_override_especifico_gana_sobre_generico(db_session):
     r = resolver_arancel(db_session, categoria="alimentadores", subcategoria=None,
                          material="PP")
     assert r.fraccion == "1111.11.11"
+
+
+def test_estandar_bd_gana_sobre_estatico(db_session):
+    """Si la tabla Arancel tiene la entrada, usa esa con fuente=aranceles-db."""
+    db_session.add(Arancel(
+        categoria="Mascotas", subcategoria="Casetas",
+        fraccion="9999.99.99", tasa_pct=7.5, nota="custom",
+    ))
+    db_session.commit()
+    r = resolver_arancel(db_session, categoria="casa-jaula", subcategoria=None,
+                         material="PP")
+    assert r.fuente == "aranceles-db"
+    assert r.fraccion == "9999.99.99"
+    assert r.tasa_pct == Decimal("7.5")
+
+
+def test_estandar_fallback_a_estatico_si_bd_vacia(db_session):
+    """Si Arancel no tiene la entrada, cae al modulo estatico tariffs.py."""
+    # db_session arranca con la tabla aranceles vacia
+    r = resolver_arancel(db_session, categoria="casa-jaula", subcategoria=None,
+                         material="PP")
+    assert r.fuente == "tariffs-estatico"
+    assert r.fraccion == "9403.89.99"
+
+
+def test_endpoint_aranceles_estandar_crud(cliente):
+    # Listar vacio
+    assert cliente.get("/api/aranceles-estandar").json() == {"items": []}
+    # Crear
+    r = cliente.post("/api/aranceles-estandar", json={
+        "categoria": "Mascotas",
+        "subcategoria": "Jaulas",
+        "fraccion": "7323.99.99",
+        "tasa_pct": 15.0,
+        "nota": "alambre/metal",
+    })
+    assert r.status_code == 200
+    arancel_id = r.json()["id"]
+    # Duplicado falla con 409
+    r2 = cliente.post("/api/aranceles-estandar", json={
+        "categoria": "Mascotas", "subcategoria": "Jaulas",
+        "fraccion": "X", "tasa_pct": 0,
+    })
+    assert r2.status_code == 409
+    # Editar
+    r = cliente.patch(f"/api/aranceles-estandar/{arancel_id}", json={
+        "categoria": "Mascotas",
+        "subcategoria": "Jaulas",
+        "fraccion": "7323.99.99",
+        "tasa_pct": 20.0,
+    })
+    assert r.json()["tasa_pct"] == 20.0
+    # Borrar
+    r = cliente.delete(f"/api/aranceles-estandar/{arancel_id}")
+    assert r.status_code == 200
+    assert cliente.get("/api/aranceles-estandar").json() == {"items": []}
 
 
 def test_endpoint_aranceles_crud(cliente, db_session):

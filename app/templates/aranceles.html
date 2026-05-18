@@ -4,26 +4,33 @@
 <div x-data="arancelesApp({{ categorias_disponibles | tojson }})" x-init="init()">
 
   <div class="mb-4 bg-white p-4 rounded shadow">
-    <h2 class="text-lg font-bold mb-2">Aranceles override</h2>
+    <h2 class="text-lg font-bold mb-2">Aranceles</h2>
     <p class="text-sm text-gray-600 mb-3">
-      Configura fraccion arancelaria y tasa por categoria + material. Mas
-      especifico gana: una regla con <em>categoria + material</em> tiene
-      prioridad sobre <em>solo categoria</em>, y esa sobre <em>solo material</em>.
-      Si nada calza:
-      <span class="font-mono text-xs">35% si material contiene acero/metal/steel/iron, 25% en otros casos</span>.
+      Dos capas: <strong>overrides</strong> (excepciones por categoria+material;
+      mas especifico gana) y <strong>estandar</strong> (tasa por
+      (categoria, subcategoria) del lookup_tariff; siembra desde
+      <code>config/aranceles.yml</code>). Orden de resolucion:
+      override &gt; metal/35% &gt; estandar &gt; default-25%.
     </p>
-    <div class="text-xs text-gray-400 mb-3">
-      Deja vacio el campo para "aplica a cualquiera".
-    </div>
-
-    <button type="button" @click="abrirNuevo()"
-            class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm">
-      + Nuevo override
-    </button>
-    <a href="/" class="ml-3 text-sm text-gray-500 hover:underline">← Volver a productos</a>
+    <a href="/" class="text-sm text-gray-500 hover:underline">← Volver a productos</a>
   </div>
 
-  <!-- Formulario nuevo/editar -->
+  <!-- ─────────── Overrides ─────────── -->
+  <div class="mb-3 bg-white p-4 rounded shadow">
+    <div class="flex justify-between items-baseline mb-2">
+      <h3 class="font-semibold text-base">Overrides (excepciones)</h3>
+      <button type="button" @click="abrirNuevo()"
+              class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm">
+        + Nuevo override
+      </button>
+    </div>
+    <p class="text-xs text-gray-500 mb-2">
+      Reglas por categoria + material (ambos opcionales). Dejar vacio el campo para
+      "aplica a cualquiera". Default: 35% si material es metalico, 25% en otros casos.
+    </p>
+  </div>
+
+  <!-- Formulario nuevo/editar OVERRIDE -->
   <div x-show="formulario" x-transition class="mb-4 bg-white p-4 rounded shadow border-l-4 border-blue-500" style="display:none">
     <h3 class="font-semibold mb-2" x-text="formulario && formulario.id ? 'Editar override #'+formulario.id : 'Nuevo override'"></h3>
     <div class="grid grid-cols-2 gap-3 text-sm">
@@ -67,7 +74,7 @@
     </div>
   </div>
 
-  <table class="bg-white w-full text-sm shadow rounded overflow-hidden">
+  <table class="bg-white w-full text-sm shadow rounded overflow-hidden mb-8">
     <thead class="bg-gray-100 text-left">
       <tr>
         <th class="p-2">Categoria</th>
@@ -98,8 +105,101 @@
       </template>
       <tr x-show="aranceles.length === 0">
         <td colspan="6" class="p-4 text-center text-gray-500">
-          No hay overrides. Sin overrides, el motor usa la regla default
-          (35% si material es metalico, 25% en otros casos).
+          No hay overrides. Sin overrides, el motor usa la tabla estandar de abajo.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ─────────── Estandar ─────────── -->
+  <div class="mb-3 bg-white p-4 rounded shadow">
+    <div class="flex justify-between items-baseline mb-2">
+      <h3 class="font-semibold text-base">Fracciones estandar (por categoria)</h3>
+      <button type="button" @click="abrirNuevoEstandar()"
+              class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded text-sm">
+        + Nueva fraccion
+      </button>
+    </div>
+    <p class="text-xs text-gray-500 mb-2">
+      Tabla sembrada desde <code>config/aranceles.yml</code>. Aplica cuando no hay
+      override ni el material dispara la regla metal/35%. Editable directo
+      desde aca; recargar el YAML con
+      <code>python -m app.cli seed-aranceles --reset</code>.
+    </p>
+  </div>
+
+  <!-- Formulario nuevo/editar ESTANDAR -->
+  <div x-show="formularioEstandar" x-transition class="mb-4 bg-white p-4 rounded shadow border-l-4 border-emerald-500" style="display:none">
+    <h3 class="font-semibold mb-2"
+        x-text="formularioEstandar && formularioEstandar.id ? 'Editar fraccion #'+formularioEstandar.id : 'Nueva fraccion estandar'"></h3>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <label>Categoria (tariff):
+        <input type="text" x-model="formularioEstandar.categoria"
+               placeholder="Mascotas / Cocina / Hogar / Hardware / Otros"
+               class="border rounded px-2 py-1 w-full mt-1">
+      </label>
+      <label>Subcategoria (tariff):
+        <input type="text" x-model="formularioEstandar.subcategoria"
+               placeholder="Jaulas / Comederos / Camas..."
+               class="border rounded px-2 py-1 w-full mt-1">
+      </label>
+      <label>Fraccion arancelaria:
+        <input type="text" x-model="formularioEstandar.fraccion"
+               placeholder="7323.99.99"
+               class="border rounded px-2 py-1 w-full mt-1 font-mono">
+      </label>
+      <label>Tasa %:
+        <input type="number" step="0.5" x-model.number="formularioEstandar.tasa_pct"
+               class="border rounded px-2 py-1 w-full mt-1 font-mono">
+      </label>
+      <label class="col-span-2">Nota (opcional):
+        <input type="text" x-model="formularioEstandar.nota"
+               class="border rounded px-2 py-1 w-full mt-1">
+      </label>
+    </div>
+    <div class="mt-3 flex gap-2">
+      <button type="button" @click="guardarEstandar()"
+              class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded text-sm">
+        Guardar
+      </button>
+      <button type="button" @click="formularioEstandar = null"
+              class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm">
+        Cancelar
+      </button>
+    </div>
+  </div>
+
+  <table class="bg-white w-full text-sm shadow rounded overflow-hidden">
+    <thead class="bg-gray-100 text-left">
+      <tr>
+        <th class="p-2">Categoria</th>
+        <th class="p-2">Subcategoria</th>
+        <th class="p-2">Fraccion</th>
+        <th class="p-2 text-right">Tasa %</th>
+        <th class="p-2">Nota</th>
+        <th class="p-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      <template x-for="a in arancelesEstandar" :key="a.id">
+        <tr class="border-t hover:bg-emerald-50/40">
+          <td class="p-2 font-semibold" x-text="a.categoria"></td>
+          <td class="p-2" x-text="a.subcategoria"></td>
+          <td class="p-2 font-mono" x-text="a.fraccion"></td>
+          <td class="p-2 text-right font-mono" x-text="a.tasa_pct.toFixed(1) + '%'"></td>
+          <td class="p-2 text-xs text-gray-600" x-text="a.nota || ''"></td>
+          <td class="p-2 text-right">
+            <button type="button" @click="editarEstandar(a)"
+                    class="text-blue-600 hover:underline text-xs">editar</button>
+            <button type="button" @click="eliminarEstandar(a)"
+                    class="text-red-600 hover:underline text-xs ml-2">borrar</button>
+          </td>
+        </tr>
+      </template>
+      <tr x-show="arancelesEstandar.length === 0">
+        <td colspan="6" class="p-4 text-center text-gray-500">
+          La tabla estandar esta vacia. Corre
+          <code>python -m app.cli seed-aranceles</code> para cargarla desde el YAML.
         </td>
       </tr>
     </tbody>
@@ -111,16 +211,25 @@ function arancelesApp(categoriasDisponibles) {
   return {
     categoriasDisponibles: categoriasDisponibles || [],
     aranceles: [],
+    arancelesEstandar: [],
     formulario: null,
+    formularioEstandar: null,
 
     async init() {
       await this.cargar();
+      await this.cargarEstandar();
     },
 
     async cargar() {
       const r = await fetch('/api/aranceles');
       const j = await r.json();
       this.aranceles = j.items;
+    },
+
+    async cargarEstandar() {
+      const r = await fetch('/api/aranceles-estandar');
+      const j = await r.json();
+      this.arancelesEstandar = j.items;
     },
 
     abrirNuevo() {
@@ -187,6 +296,78 @@ function arancelesApp(categoriasDisponibles) {
         return;
       }
       await this.cargar();
+    },
+
+    // --- Estandar ---
+    abrirNuevoEstandar() {
+      this.formularioEstandar = {
+        id: null,
+        categoria: '',
+        subcategoria: '',
+        fraccion: '',
+        tasa_pct: 15,
+        nota: '',
+      };
+    },
+
+    editarEstandar(a) {
+      this.formularioEstandar = {
+        id: a.id,
+        categoria: a.categoria,
+        subcategoria: a.subcategoria,
+        fraccion: a.fraccion,
+        tasa_pct: a.tasa_pct,
+        nota: a.nota || '',
+      };
+    },
+
+    async guardarEstandar() {
+      const f = this.formularioEstandar;
+      if (!f.categoria || !f.subcategoria) {
+        alert('Categoria y subcategoria son obligatorias');
+        return;
+      }
+      if (!f.fraccion) {
+        alert('La fraccion arancelaria es obligatoria');
+        return;
+      }
+      if (f.tasa_pct === null || f.tasa_pct < 0) {
+        alert('La tasa debe ser >= 0');
+        return;
+      }
+      const body = {
+        categoria: f.categoria,
+        subcategoria: f.subcategoria,
+        fraccion: f.fraccion,
+        tasa_pct: f.tasa_pct,
+        nota: f.nota || null,
+      };
+      const url = f.id
+        ? `/api/aranceles-estandar/${f.id}`
+        : '/api/aranceles-estandar';
+      const method = f.id ? 'PATCH' : 'POST';
+      const r = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        alert('Error: ' + r.status + ' ' + await r.text());
+        return;
+      }
+      this.formularioEstandar = null;
+      await this.cargarEstandar();
+    },
+
+    async eliminarEstandar(a) {
+      const desc = `${a.categoria} / ${a.subcategoria} → ${a.fraccion} ${a.tasa_pct}%`;
+      if (!confirm(`Borrar fraccion estandar?\n${desc}`)) return;
+      const r = await fetch(`/api/aranceles-estandar/${a.id}`, { method: 'DELETE' });
+      if (!r.ok) {
+        alert('Error eliminando');
+        return;
+      }
+      await this.cargarEstandar();
     },
   };
 }

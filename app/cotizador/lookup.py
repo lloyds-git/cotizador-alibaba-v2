@@ -1,8 +1,10 @@
 """
 Lookup unificado: consulta primero la tabla aranceles_override (DB), luego
-la regla default acero/metal, y como ultimo recurso el tariffs.py estatico.
+la regla default acero/metal, luego la tabla aranceles (seedeada desde
+config/aranceles.yml; antes era el dict hardcoded en tariffs.py). Como
+fallback de resiliencia (BD vacia/inexistente), usa el modulo estatico.
 
-Default rule (cuando no hay override en DB ni match estatico):
+Default rule (cuando no hay override en DB ni match en estandar):
   - Si material contiene 'steel', 'acero', 'metal' o 'iron' -> 35%
   - Si no -> 25%
   Fraccion arancelaria default: "—" (Salo la define despues si hace falta).
@@ -15,7 +17,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.modelos import ArancelOverride
+from app.modelos import ArancelOverride, Arancel
 from app.cotizador.tariffs import lookup_tariff as lookup_tariff_estatico
 
 
@@ -103,7 +105,7 @@ def resolver_arancel(
                 nota=ov.nota or "",
             )
 
-    # 2. Default por material metalico (gana sobre estatico)
+    # 2. Default por material metalico (gana sobre estandar)
     if _es_metalico(material):
         return TariffResult(
             fraccion="—",
@@ -112,10 +114,34 @@ def resolver_arancel(
             nota="Material metalico (acero/metal/iron) -> 35%. Configurar override si la fraccion real difiere.",
         )
 
-    # 3. Tariffs.py estatico (mapeado por categorias mascotas)
+    # 3. Tabla aranceles estandar (BD; fallback al modulo estatico si BD vacia)
     from app.cotizador.adapter import CATEGORIA_A_TARIFA
     if categoria and categoria in CATEGORIA_A_TARIFA:
         cat_tar, subcat_tar = CATEGORIA_A_TARIFA[categoria]
+
+        # Intentar BD primero
+        if session is not None:
+            std = (
+                session.query(Arancel)
+                .filter_by(categoria=cat_tar, subcategoria=subcat_tar)
+                .first()
+            )
+            if std is None:
+                # Fallback al "Otros" de la misma categoria
+                std = (
+                    session.query(Arancel)
+                    .filter_by(categoria=cat_tar, subcategoria="Otros")
+                    .first()
+                )
+            if std is not None and std.fraccion and std.fraccion != "—":
+                return TariffResult(
+                    fraccion=std.fraccion,
+                    tasa_pct=Decimal(str(std.tasa_pct)),
+                    fuente="aranceles-db",
+                    nota=std.nota or "",
+                )
+
+        # Fallback al modulo estatico (resiliencia ante BD vacia)
         entry = lookup_tariff_estatico(cat_tar, subcat_tar)
         if entry.fraccion != "—":
             return TariffResult(

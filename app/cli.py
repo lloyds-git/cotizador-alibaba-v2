@@ -11,6 +11,7 @@ Uso:
     python -m app.cli stats                 # contar productos/proveedores
     python -m app.cli validar [prov_id]     # reporte de calidad (default: ultimo)
     python -m app.cli seed-categorias       # cargar config/categorias.yml a BD
+    python -m app.cli seed-aranceles        # cargar config/aranceles.yml a BD (--reset opcional)
 """
 
 import os
@@ -266,6 +267,15 @@ def cmd_seed_categorias():
         print(f"  {k}: {v}")
 
 
+def cmd_seed_aranceles(reset: bool = False):
+    """Siembra fracciones arancelarias estandar desde config/aranceles.yml."""
+    from scripts.seed_aranceles import seed
+    resumen = seed(reset=reset)
+    print(f"Seed de aranceles completado{' (RESET)' if reset else ''}.")
+    for k, v in resumen.items():
+        print(f"  {k}: {v}")
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -290,6 +300,9 @@ def main():
         cmd_validar(prov_id)
     elif cmd == "seed-categorias":
         cmd_seed_categorias()
+    elif cmd == "seed-aranceles":
+        flags = [a for a in sys.argv[2:] if a.startswith("--")]
+        cmd_seed_aranceles(reset="--reset" in flags)
     else:
         print(f"Comando desconocido: {cmd}")
         print(__doc__)

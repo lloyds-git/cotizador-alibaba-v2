@@ -210,3 +210,30 @@ class ArancelOverride(Base):
     nota = Column(Text)
     creado_en = Column(DateTime, default=datetime.utcnow)
     actualizado_en = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Arancel(Base):
+    """Fraccion arancelaria estandar por (categoria, subcategoria).
+
+    Reemplaza el dict hardcoded de app/cotizador/tariffs.py. Se siembra
+    desde config/aranceles.yml. Editable desde la UI /aranceles.
+
+    Las categoria/subcategoria aca son las del lookup_tariff (ej.
+    'Mascotas'/'Jaulas'), no las categorias de Producto. El mapeo entre
+    `Producto.categoria` (slug) -> ('Mascotas', 'Subcat') vive en
+    app/cotizador/adapter.py CATEGORIA_A_TARIFA.
+
+    Orden de resolucion: ArancelOverride > default-metal > Arancel > default-25.
+    """
+    __tablename__ = "aranceles"
+    __table_args__ = (
+        UniqueConstraint("categoria", "subcategoria", name="uq_arancel_cat_subcat"),
+    )
+    id = Column(Integer, primary_key=True)
+    categoria = Column(String(50), nullable=False)
+    subcategoria = Column(String(50), nullable=False)
+    fraccion = Column(String(20), nullable=False)
+    tasa_pct = Column(Float, nullable=False)
+    nota = Column(Text)
+    creado_en = Column(DateTime, default=datetime.utcnow)
+    actualizado_en = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
