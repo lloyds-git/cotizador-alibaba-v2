@@ -129,6 +129,12 @@
         🧮 Validar CBM
       </button>
 
+      <button type="button" @click="abrirValidar40HQ()"
+              class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-1 rounded inline-flex items-center gap-1"
+              title="Calcula pzas_40hq = floor(67/CBM) x pzas_caja para productos que lo tienen vacio">
+        📦 Validar 40HQ
+      </button>
+
       <button type="button" @click="exportarCategoria()" :disabled="!categoriaFiltro || categoriaFiltro === ''"
               class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               :title="categoriaFiltro ? 'Exportar categoria ' + categoriaFiltro : 'Selecciona una categoria para exportar por categoria'">
@@ -403,6 +409,15 @@
                         class="text-[10px] bg-cyan-100 hover:bg-cyan-200 text-cyan-800 px-1.5 py-0.5 rounded disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
                         :title="!detalle.carton_dims ? 'Falta carton_dims' : 'Recalcular CBM desde carton_dims (L*W*H / 1.000.000)'">
                   🧮
+                </button>
+                <!-- Boton de recalcular pzas_40hq (requiere cbm + pzas_caja) -->
+                <button type="button"
+                        x-show="campo.key === 'pzas_40hq'"
+                        @click="recalcularPzas40hqProducto()"
+                        :disabled="!editable || !detalle.cbm || !detalle.pzas_caja"
+                        class="text-[10px] bg-teal-100 hover:bg-teal-200 text-teal-800 px-1.5 py-0.5 rounded disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+                        :title="!detalle.cbm ? 'Falta CBM' : (!detalle.pzas_caja ? 'Falta pzas_caja' : 'Recalcular pzas_40hq = floor(67 / cbm) x pzas_caja')">
+                  📦
                 </button>
               </div>
             </div>
@@ -877,6 +892,120 @@
       </div>
     </div>
   </div>
+
+  <!-- Modal: Validar pzas_40hq -->
+  <div x-show="mostrarValidar40HQ"
+       x-transition.opacity
+       class="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4"
+       style="display:none"
+       @click.self="cerrarValidar40HQ()">
+    <div class="bg-white rounded-lg shadow-2xl max-w-5xl w-full p-5 max-h-[90vh] flex flex-col">
+      <div class="flex justify-between items-start mb-3">
+        <div>
+          <div class="text-lg font-bold">📦 Validar Pzas / 40HQ</div>
+          <div class="text-xs text-gray-500">
+            Calcula <code>floor(67 / cbm) × pzas_caja</code>. Lista productos con
+            <code>pzas_40hq</code> vacio. Los bloqueados necesitan llenar cbm o pzas_caja antes.
+          </div>
+        </div>
+        <button type="button" @click="cerrarValidar40HQ()"
+                class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
+      </div>
+
+      <div x-show="pzas40Cargando" class="text-center py-8">
+        <div class="text-4xl animate-pulse">⏳</div>
+        <div class="text-sm font-semibold mt-3">Buscando productos sin pzas_40hq...</div>
+      </div>
+
+      <template x-if="pzas40ResultadoAplicado">
+        <div class="bg-green-50 border border-green-200 text-green-800 text-sm rounded p-3 mb-3">
+          Aplicados: <strong x-text="pzas40ResultadoAplicado.aplicados.length"></strong>.
+          <span x-show="pzas40ResultadoAplicado.sin_cambio && pzas40ResultadoAplicado.sin_cambio.length">
+            Sin cambio: <span x-text="pzas40ResultadoAplicado.sin_cambio.length"></span>.
+          </span>
+        </div>
+      </template>
+
+      <div x-show="!pzas40Cargando && pzas40Sugerencias !== null" class="overflow-auto flex-1">
+        <template x-if="pzas40Sugerencias.length === 0">
+          <div class="text-center text-sm text-gray-500 py-8">
+            ✓ Todos los productos tienen <code>pzas_40hq</code> poblado.
+          </div>
+        </template>
+        <template x-if="pzas40Sugerencias.length > 0">
+          <div>
+            <div class="flex items-center justify-between text-xs mb-2">
+              <div class="flex gap-2">
+                <button type="button" @click="pzas40SeleccionarTodos(true)"
+                        class="text-blue-600 hover:underline">Seleccionar aplicables</button>
+                <span class="text-gray-300">|</span>
+                <button type="button" @click="pzas40SeleccionarTodos(false)"
+                        class="text-blue-600 hover:underline">Ninguno</button>
+              </div>
+              <div class="text-gray-500">
+                <span x-text="pzas40Seleccionados().length"></span> seleccionados,
+                <span x-text="pzas40Sugerencias.filter(s => s.estado === 'falta').length"></span> aplicables /
+                <span x-text="pzas40Sugerencias.length"></span> total
+              </div>
+            </div>
+            <table class="w-full text-xs">
+              <thead class="bg-gray-100 sticky top-0">
+                <tr>
+                  <th class="p-2 text-left w-8"></th>
+                  <th class="p-2 text-left">SKU</th>
+                  <th class="p-2 text-left">Descripcion</th>
+                  <th class="p-2 text-right">CBM</th>
+                  <th class="p-2 text-right">Pzas/caja</th>
+                  <th class="p-2 text-right">Pzas/40HQ calc</th>
+                  <th class="p-2 text-center">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="s in pzas40Sugerencias" :key="s.producto_id">
+                  <tr class="border-t hover:bg-blue-50"
+                      :class="s.estado === 'bloqueado' ? 'opacity-60' : ''">
+                    <td class="p-2">
+                      <input type="checkbox" x-model="s._seleccionado"
+                             :disabled="s.estado !== 'falta'">
+                    </td>
+                    <td class="p-2 font-mono" x-text="s.sku"></td>
+                    <td class="p-2 max-w-[260px] truncate" :title="s.descripcion"
+                        x-text="s.descripcion"></td>
+                    <td class="p-2 text-right font-mono"
+                        x-text="s.cbm !== null && s.cbm !== undefined ? s.cbm.toFixed(4) : '—'"></td>
+                    <td class="p-2 text-right font-mono"
+                        x-text="s.pzas_caja !== null && s.pzas_caja !== undefined ? s.pzas_caja : '—'"></td>
+                    <td class="p-2 text-right font-mono text-green-700"
+                        x-text="s.pzas_40hq_calculado !== null && s.pzas_40hq_calculado !== undefined ? s.pzas_40hq_calculado : '—'"></td>
+                    <td class="p-2 text-center">
+                      <span x-show="s.estado === 'falta'"
+                            class="bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded text-[10px]">FALTA</span>
+                      <span x-show="s.estado === 'bloqueado'"
+                            class="bg-red-100 text-red-800 px-2 py-0.5 rounded text-[10px]"
+                            :title="s.motivo"
+                            x-text="s.motivo"></span>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </div>
+
+      <div class="flex justify-end gap-2 mt-3 border-t pt-3">
+        <button type="button" @click="cerrarValidar40HQ()"
+                class="bg-gray-100 hover:bg-gray-200 text-sm px-4 py-2 rounded">
+          Cerrar
+        </button>
+        <button type="button" @click="pzas40AplicarSeleccionados()"
+                :disabled="pzas40Cargando || !pzas40Sugerencias || pzas40Seleccionados().length === 0"
+                class="bg-teal-600 hover:bg-teal-700 text-white text-sm px-4 py-2 rounded disabled:opacity-40 disabled:cursor-not-allowed">
+          Aplicar (<span x-text="pzas40Seleccionados().length"></span>)
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -931,6 +1060,11 @@ function productosApp() {
     cbmCargando: false,
     cbmSugerencias: null,
     cbmResultadoAplicado: null,
+    // Validar pzas_40hq
+    mostrarValidar40HQ: false,
+    pzas40Cargando: false,
+    pzas40Sugerencias: null,
+    pzas40ResultadoAplicado: null,
     // Persistir preferencia de "editable" en el navegador
     cargarEditable() {
       try { this.editable = localStorage.getItem('editable') === '1'; } catch (_) {}
@@ -1536,6 +1670,102 @@ function productosApp() {
       } finally {
         this.cbmCargando = false;
       }
+    },
+
+    // --- Validar pzas_40hq ---
+    async abrirValidar40HQ() {
+      this.mostrarValidar40HQ = true;
+      this.pzas40ResultadoAplicado = null;
+      this.pzas40Sugerencias = null;
+      this.pzas40Cargando = true;
+      try {
+        const r = await fetch('/api/pzas40hq/sugerencias');
+        const j = await r.json();
+        // Por default seleccionamos solo los aplicables (estado='falta')
+        this.pzas40Sugerencias = (j.items || []).map(it => ({
+          ...it,
+          _seleccionado: it.estado === 'falta',
+        }));
+      } catch (e) {
+        this.pzas40Sugerencias = [];
+        alert('Error cargando sugerencias: ' + e.message);
+      } finally {
+        this.pzas40Cargando = false;
+      }
+    },
+
+    cerrarValidar40HQ() {
+      this.mostrarValidar40HQ = false;
+    },
+
+    pzas40SeleccionarTodos(v) {
+      if (!this.pzas40Sugerencias) return;
+      this.pzas40Sugerencias.forEach(s => {
+        // Solo permitimos seleccionar los aplicables; los bloqueados quedan off.
+        if (s.estado === 'falta') s._seleccionado = v;
+      });
+    },
+
+    pzas40Seleccionados() {
+      return (this.pzas40Sugerencias || []).filter(s => s._seleccionado && s.estado === 'falta');
+    },
+
+    async pzas40AplicarSeleccionados() {
+      const sel = this.pzas40Seleccionados();
+      if (sel.length === 0) return;
+      this.pzas40Cargando = true;
+      try {
+        const r = await fetch('/api/pzas40hq/aplicar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: sel.map(s => s.producto_id) }),
+        });
+        const j = await r.json();
+        this.pzas40ResultadoAplicado = j;
+        await this.cargar();
+        if (this.detalle) {
+          const a = (j.aplicados || []).find(a => a.producto_id === this.detalle.producto_id);
+          if (a) this.detalle.pzas_40hq = a.pzas_40hq_nuevo;
+        }
+        const aplicadosIds = new Set((j.aplicados || []).map(a => a.producto_id));
+        this.pzas40Sugerencias = this.pzas40Sugerencias.filter(s => !aplicadosIds.has(s.producto_id));
+      } catch (e) {
+        alert('Error aplicando: ' + e.message);
+      } finally {
+        this.pzas40Cargando = false;
+      }
+    },
+
+    // Recalcula pzas_40hq para el producto del panel actual.
+    async recalcularPzas40hqProducto() {
+      if (!this.detalle) return;
+      if (!this.editable) return;
+      const pid = this.detalle.producto_id;
+      const key = pid + ':pzas_40hq';
+      this.saving[key] = 'saving';
+      try {
+        const r = await fetch('/api/pzas40hq/aplicar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: [pid] }),
+        });
+        const j = await r.json();
+        const a = (j.aplicados || []).find(x => x.producto_id === pid);
+        if (a) {
+          this.detalle.pzas_40hq = a.pzas_40hq_nuevo;
+          this.saving[key] = 'ok';
+          await this.cargar();
+        } else {
+          this.saving[key] = 'error';
+          const motivo = (j.sin_cambio && j.sin_cambio[0] && j.sin_cambio[0].motivo)
+            || 'no se pudo recalcular';
+          alert('No aplicado: ' + motivo);
+        }
+      } catch (e) {
+        this.saving[key] = 'error';
+        alert('Error: ' + e.message);
+      }
+      setTimeout(() => { delete this.saving[key]; }, 2000);
     },
 
     // Recalcula y aplica CBM para el producto del panel de detalle, usando

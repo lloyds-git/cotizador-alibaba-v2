@@ -15,7 +15,11 @@ from app.modelos import (
     Foto, Categoria, CategoriaKeyword, PatronDescarte,
 )
 from app.clasificador import clasificar_descripcion, invalidar_cache
-from app.ingest import cbm_desde_carton_dims, cbm_es_discrepante
+from app.ingest import (
+    cbm_desde_carton_dims,
+    cbm_es_discrepante,
+    pzas_40hq_desde_cbm_y_caja,
+)
 
 router = APIRouter()
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -841,6 +845,88 @@ def cbm_aplicar(body: CbmAplicarBody, db: SesionDep):
             "cbm_nuevo": cbm_calc,
         })
         p.cbm = cbm_calc
+    db.commit()
+    return {"ok": True, "aplicados": aplicados, "sin_cambio": sin_cambio}
+
+
+class Pzas40hqAplicarBody(BaseModel):
+    ids: list[int]
+
+
+@router.get("/api/pzas40hq/sugerencias")
+def pzas40hq_sugerencias(db: SesionDep):
+    """Lista productos con pzas_40hq faltante. Incluye bloqueados (sin inputs).
+
+    Estado 'falta': pzas_40hq vacio + tiene cbm + pzas_caja -> aplicable.
+    Estado 'bloqueado': pzas_40hq vacio pero falta cbm o pzas_caja -> no
+    se puede derivar; la UI lo muestra con motivo para que el usuario sepa
+    que tiene que llenar el input previo (o re-ingestar).
+
+    No se reportan productos con pzas_40hq ya poblado: respetamos lo que
+    Claude leyo directo del PDF.
+    """
+    productos = db.query(Producto).all()
+    items = []
+    for p in productos:
+        if p.pzas_40hq and p.pzas_40hq > 0:
+            continue
+        calc = pzas_40hq_desde_cbm_y_caja(p.cbm, p.pzas_caja)
+        if calc is not None and calc > 0:
+            estado = "falta"
+            motivo = None
+        else:
+            estado = "bloqueado"
+            faltan = []
+            if not p.cbm or p.cbm <= 0:
+                faltan.append("cbm")
+            if not p.pzas_caja or p.pzas_caja <= 0:
+                faltan.append("pzas_caja")
+            motivo = "falta " + " + ".join(faltan) if faltan else "sin inputs"
+        items.append({
+            "producto_id": p.id,
+            "sku": p.sku,
+            "descripcion": p.descripcion,
+            "cbm": p.cbm,
+            "pzas_caja": p.pzas_caja,
+            "pzas_40hq_actual": p.pzas_40hq,
+            "pzas_40hq_calculado": calc,
+            "estado": estado,
+            "motivo": motivo,
+        })
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/api/pzas40hq/aplicar")
+def pzas40hq_aplicar(body: Pzas40hqAplicarBody, db: SesionDep):
+    """Aplica pzas_40hq calculado a los productos indicados.
+
+    Skip silencioso si faltan inputs (cbm o pzas_caja): el id queda fuera
+    de `aplicados` para que la UI muestre la situacion.
+    """
+    aplicados = []
+    sin_cambio = []
+    for pid in body.ids:
+        p = db.get(Producto, pid)
+        if not p:
+            continue
+        calc = pzas_40hq_desde_cbm_y_caja(p.cbm, p.pzas_caja)
+        if calc is None or calc <= 0:
+            faltan = []
+            if not p.cbm or p.cbm <= 0:
+                faltan.append("cbm")
+            if not p.pzas_caja or p.pzas_caja <= 0:
+                faltan.append("pzas_caja")
+            sin_cambio.append({
+                "producto_id": pid,
+                "motivo": "falta " + " + ".join(faltan) if faltan else "no aplicable",
+            })
+            continue
+        aplicados.append({
+            "producto_id": pid,
+            "pzas_40hq_anterior": p.pzas_40hq,
+            "pzas_40hq_nuevo": calc,
+        })
+        p.pzas_40hq = calc
     db.commit()
     return {"ok": True, "aplicados": aplicados, "sin_cambio": sin_cambio}
 

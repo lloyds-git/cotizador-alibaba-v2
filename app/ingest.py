@@ -196,6 +196,24 @@ def cbm_es_discrepante(cbm_db: float | None, cbm_calc: float | None) -> bool:
     return ratio > 1.5 or ratio < 0.67
 
 
+# Capacidad util de un contenedor 40HQ en m3. Conservador: navieras
+# suelen reportar 67-76; usamos 67 como en el motor y el script de fix.
+CBM_40HQ = 67
+
+
+def pzas_40hq_desde_cbm_y_caja(cbm: float | None, pzas_caja: int | None) -> int | None:
+    """Calcula pzas_40hq = floor(67 / cbm) * pzas_caja.
+
+    Devuelve None si falta cualquier input. Es el mismo calculo del
+    auto-derive del ingest y del backfill script.
+    """
+    if not cbm or cbm <= 0:
+        return None
+    if not pzas_caja or pzas_caja <= 0:
+        return None
+    return math.floor(CBM_40HQ / cbm) * pzas_caja
+
+
 def _extraer_imagenes_xlsx(xlsx_path: str) -> dict[int, bytes]:
     """
     Devuelve {fila_excel: bytes_de_imagen} para imagenes ancladas en col A.
