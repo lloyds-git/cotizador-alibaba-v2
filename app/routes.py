@@ -57,6 +57,7 @@ class ActualizarBody(BaseModel):
     cbm: float | None = None
     pzas_20ft: int | None = None
     pzas_40hq: int | None = None
+    pzas_caja: int | None = None
     lead_time: str | None = None
 
 
@@ -695,6 +696,7 @@ def cotizar_14_pasos(
         "cbm": p.cbm,
         "pzas_20ft": p.pzas_20ft,
         "pzas_40hq": p.pzas_40hq,
+        "pzas_caja": p.pzas_caja,
         "lead_time": p.lead_time,
         "proveedor": p.proveedor.nombre if p.proveedor else None,
         "fotos": [f.ruta_relativa for f in p.fotos],
@@ -771,6 +773,8 @@ def actualizar(producto_id: int, body: ActualizarBody, db: SesionDep):
         p.pzas_20ft = body.pzas_20ft
     if body.pzas_40hq is not None:
         p.pzas_40hq = body.pzas_40hq
+    if body.pzas_caja is not None:
+        p.pzas_caja = body.pzas_caja
     if body.lead_time is not None:
         p.lead_time = body.lead_time.strip() or None
     db.commit()

@@ -11,6 +11,7 @@ Estrategia:
 from __future__ import annotations
 
 import json
+import math
 import re
 import zipfile
 from pathlib import Path
@@ -142,6 +143,7 @@ COL_PZAS20 = 12
 COL_PZAS40 = 13
 COL_LEAD = 14
 COL_FOB = 15
+COL_PZAS_CAJA = 16
 
 
 def _to_float(v) -> float | None:
@@ -380,6 +382,14 @@ def ingestar_xlsx_intermedio(
             prod.cbm = cbm_leido
         prod.pzas_20ft = _to_int(ws.cell(fila, COL_PZAS20).value)
         prod.pzas_40hq = _to_int(ws.cell(fila, COL_PZAS40).value)
+        prod.pzas_caja = _to_int(ws.cell(fila, COL_PZAS_CAJA).value)
+        # Auto-derive de pzas_40hq cuando Claude no lo leyo pero tenemos
+        # pzas_caja + cbm: 67 m3 utiles / CBM por caja => cajas, x pzas_caja.
+        # Solo si pzas_40hq viene vacio: no sobrescribir lo que Claude leyo.
+        if (not prod.pzas_40hq or prod.pzas_40hq <= 0) \
+           and prod.pzas_caja and prod.pzas_caja > 0 \
+           and prod.cbm and prod.cbm > 0:
+            prod.pzas_40hq = math.floor(67 / prod.cbm) * prod.pzas_caja
         prod.lead_time = str(ws.cell(fila, COL_LEAD).value or "").strip()
 
         session.flush()

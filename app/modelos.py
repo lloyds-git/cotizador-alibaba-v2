@@ -46,6 +46,7 @@ class Producto(Base):
     cbm = Column(Float)
     pzas_20ft = Column(Integer)
     pzas_40hq = Column(Integer)
+    pzas_caja = Column(Integer)  # piezas por carton master (QTY/CARTON del PDF)
     lead_time = Column(String(100))
 
     categoria = Column(String(50))

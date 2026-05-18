@@ -229,7 +229,10 @@ REGLAS:
 6. Para "foto": elige el archivo de figura mas cercano al producto por
    coordenada Y en la misma pagina. Si no hay figura cercana, "".
 7. Para "fob": numero sin "$" ni "US$". Si no lo encuentras, null.
-8. Para campos opcionales, deja "" si no aparecen en el PDF.
+8. Para "pzas_caja": cuantas piezas hay por carton master. Buscar columnas tipo
+   "QTY/CARTON", "PCS/CTN", "pcs per carton" o frases tipo "12 pcs/box". Si
+   packing dice "1pc/..." entonces pzas_caja = 1. Si no aparece, dejar "".
+9. Para campos opcionales, deja "" si no aparecen en el PDF.
 
 Devuelve EXCLUSIVAMENTE un JSON valido (sin texto adicional ni markdown):
 {{
@@ -249,6 +252,7 @@ Devuelve EXCLUSIVAMENTE un JSON valido (sin texto adicional ni markdown):
       "packing": "1pc / brown carton box",
       "carton": "655x210x520mm",
       "cbm": "0.07",
+      "pzas_caja": "1",
       "pzas_20ft": "380",
       "pzas_40hq": "950",
       "lead_time": "25 days"
@@ -472,6 +476,9 @@ Te paso N imagenes correspondientes a las paginas (ordenadas) de una cotizacion.
    - packing: como se empaca cada unidad. Ej: "1pc/PE bag/colorbox".
    - carton: dimensiones del carton master. Ej: "55x40x30cm".
    - cbm: metros cubicos por carton master (numero).
+   - pzas_caja: piezas por carton master (numero). BUSCAR especificamente columnas
+     tipo "QTY/CARTON", "PCS/CTN", "pcs per carton", "qty/box", "pcs/carton" o frases
+     como "12 pcs/box". Si el packing dice "1pc/..." => pzas_caja = 1. Si no aparece, omitir.
    - pzas_20ft: piezas por contenedor 20ft (numero).
    - pzas_40hq: piezas por contenedor 40HQ (numero).
    - lead_time: tiempo de entrega. Ej: "30 days".

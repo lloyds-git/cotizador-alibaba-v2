@@ -42,6 +42,13 @@ RE_PZAS_CAJA = re.compile(
 )
 # fallback: '1 pc/box', '1 set/box' aceptamos '1 X/Y'
 RE_PZAS_SIMPLE = re.compile(r"(\d+)\s*(?:pc|pcs|set|pza)\s*[/\\]\s*(?:box|carton|ctn|caja)", re.IGNORECASE)
+# Patron tipo "1pc / 52.5*18.5*77cm": cantidad seguida de '/' y dimensiones
+# del carton master (no la palabra carton/box). Caso NDH3007 de Suzhou
+# Excellence: el packing es exactamente "1pc / <dims>cm" sin literal "carton".
+RE_PZAS_DIMS = re.compile(
+    r"(\d+)\s*(?:pcs?|set|pza)\s*[/\\]\s*[\d.]+\s*[*x×]",
+    re.IGNORECASE,
+)
 
 
 def parsear_cbm_desde_carton(carton_dims: str | None) -> float | None:
@@ -60,26 +67,20 @@ def parsear_cbm_desde_carton(carton_dims: str | None) -> float | None:
 
 
 def parsear_pzas_caja(moq: str | None, packing: str | None = None) -> int | None:
-    """Busca patrones tipo '1 pc/box', '90 pcs/carton' en moq + packing."""
+    """Busca patrones tipo '1 pc/box', '90 pcs/carton', '1pc / 52.5*18.5*77cm'
+    en moq + packing."""
     for texto in (moq, packing):
         if not texto:
             continue
-        m = RE_PZAS_CAJA.search(texto)
-        if m:
-            try:
-                n = int(m.group(1))
-                if n > 0:
-                    return n
-            except ValueError:
-                pass
-        m = RE_PZAS_SIMPLE.search(texto)
-        if m:
-            try:
-                n = int(m.group(1))
-                if n > 0:
-                    return n
-            except ValueError:
-                pass
+        for patron in (RE_PZAS_CAJA, RE_PZAS_SIMPLE, RE_PZAS_DIMS):
+            m = patron.search(texto)
+            if m:
+                try:
+                    n = int(m.group(1))
+                    if n > 0:
+                        return n
+                except ValueError:
+                    pass
     return None
 
 
@@ -90,6 +91,7 @@ def fix(dry_run: bool) -> dict:
     productos = s.query(Producto).all()
     fixes_cbm = 0
     fixes_pzas = 0
+    fixes_pzas_caja = 0
     sin_cambios = 0
 
     for p in productos:
@@ -111,15 +113,24 @@ def fix(dry_run: bool) -> dict:
                     p.cbm = cbm_calc
                     fixes_cbm += 1
 
-        # Derivar pzas_40hq si esta vacio y tenemos CBM + pzas/caja
+        # Poblar pzas_caja parseando moq/packing si esta vacio.
+        if p.pzas_caja is None or p.pzas_caja <= 0:
+            pc = parsear_pzas_caja(p.moq, p.packing)
+            if pc:
+                cambios.append(f"pzas_caja None -> {pc}")
+                p.pzas_caja = pc
+                fixes_pzas_caja += 1
+
+        # Derivar pzas_40hq si esta vacio y tenemos CBM + pzas_caja.
         if not p.pzas_40hq or p.pzas_40hq <= 0:
-            pzas_caja = parsear_pzas_caja(p.moq, p.packing)
             cbm_actual = p.cbm or 0
-            if pzas_caja and cbm_actual > 0:
+            if p.pzas_caja and p.pzas_caja > 0 and cbm_actual > 0:
                 cajas_40hq = math.floor(CBM_40HQ / cbm_actual)
-                derivado = cajas_40hq * pzas_caja
+                derivado = cajas_40hq * p.pzas_caja
                 if derivado > 0:
-                    cambios.append(f"pzas_40hq None -> {derivado} ({cajas_40hq} cajas x {pzas_caja} pcs)")
+                    cambios.append(
+                        f"pzas_40hq None -> {derivado} ({cajas_40hq} cajas x {p.pzas_caja} pcs)"
+                    )
                     p.pzas_40hq = derivado
                     fixes_pzas += 1
 
@@ -135,6 +146,7 @@ def fix(dry_run: bool) -> dict:
     s.close()
     return {
         "fixes_cbm": fixes_cbm,
+        "fixes_pzas_caja": fixes_pzas_caja,
         "fixes_pzas_40hq": fixes_pzas,
         "sin_cambios": sin_cambios,
         "total": len(productos),
@@ -148,6 +160,7 @@ def main():
     r = fix(dry_run=args.dry_run)
     print(f"\nTotal productos: {r['total']}")
     print(f"CBM corregidos: {r['fixes_cbm']}")
+    print(f"pzas_caja poblados: {r['fixes_pzas_caja']}")
     print(f"pzas_40hq derivados: {r['fixes_pzas_40hq']}")
     print(f"Sin cambios: {r['sin_cambios']}")
     if args.dry_run:

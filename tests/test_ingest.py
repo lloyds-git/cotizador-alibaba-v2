@@ -1,5 +1,30 @@
 from pathlib import Path
+import openpyxl
 from app.ingest import ingestar_xlsx_intermedio
+
+
+def _construir_xlsx_minimo(path: Path, filas: list[dict]) -> None:
+    """Crea un xlsx intermedio con las 16 columnas del schema actual.
+
+    Cada elemento de `filas` es un dict con las claves (cualquier subset):
+    sku, descripcion, fob, cbm, pzas_40hq, pzas_caja.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Cotizacion PDF"
+    headers = ["Foto", "SKU", "Descripcion", "Medidas", "Material", "Peso (kg)",
+               "Color", "MOQ", "Packing", "Carton dims", "CBM",
+               "Pzas 20ft", "Pzas 40hq", "Lead time", "FOB USD", "Pzas/caja"]
+    for i, h in enumerate(headers, 1):
+        ws.cell(row=1, column=i, value=h)
+    for r, f in enumerate(filas, start=2):
+        ws.cell(row=r, column=2, value=f.get("sku"))
+        ws.cell(row=r, column=3, value=f.get("descripcion") or "x")
+        ws.cell(row=r, column=11, value=f.get("cbm"))
+        ws.cell(row=r, column=13, value=f.get("pzas_40hq"))
+        ws.cell(row=r, column=15, value=f.get("fob"))
+        ws.cell(row=r, column=16, value=f.get("pzas_caja"))
+    wb.save(path)
 
 
 def test_ingest_inserta_proveedor_y_productos(db_session, tmp_path):
@@ -62,3 +87,48 @@ def test_ingest_actualiza_fob_si_cambio(db_session, tmp_path):
 
     p2 = db_session.query(Producto).filter_by(sku="TEST-001").first()
     assert p2.fob_usd == 10.5
+
+
+def test_ingest_persiste_pzas_caja(db_session, tmp_path):
+    """pzas_caja en columna 16 se persiste tal cual."""
+    xlsx = tmp_path / "t.xlsx"
+    _construir_xlsx_minimo(xlsx, [
+        {"sku": "PC-001", "fob": 1.0, "pzas_caja": 24, "cbm": 0.05, "pzas_40hq": 100},
+    ])
+    ingestar_xlsx_intermedio(db_session, str(xlsx), "Vendor", str(tmp_path / "fotos"))
+    db_session.commit()
+
+    from app.modelos import Producto
+    p = db_session.query(Producto).filter_by(sku="PC-001").first()
+    assert p.pzas_caja == 24
+    assert p.pzas_40hq == 100  # no se sobrescribe lo leido
+
+
+def test_ingest_deriva_pzas_40hq_desde_pzas_caja(db_session, tmp_path):
+    """Si pzas_40hq viene vacio pero hay pzas_caja+cbm, lo deriva."""
+    xlsx = tmp_path / "t.xlsx"
+    _construir_xlsx_minimo(xlsx, [
+        {"sku": "PC-002", "fob": 1.0, "pzas_caja": 24, "cbm": 0.05},  # sin pzas_40hq
+    ])
+    ingestar_xlsx_intermedio(db_session, str(xlsx), "Vendor", str(tmp_path / "fotos"))
+    db_session.commit()
+
+    from app.modelos import Producto
+    p = db_session.query(Producto).filter_by(sku="PC-002").first()
+    # floor(67/0.05) * 24 = 1340 * 24 = 32160
+    assert p.pzas_40hq == 32160
+
+
+def test_ingest_no_deriva_sin_pzas_caja(db_session, tmp_path):
+    """Sin pzas_caja no se deriva pzas_40hq."""
+    xlsx = tmp_path / "t.xlsx"
+    _construir_xlsx_minimo(xlsx, [
+        {"sku": "PC-003", "fob": 1.0, "cbm": 0.05},
+    ])
+    ingestar_xlsx_intermedio(db_session, str(xlsx), "Vendor", str(tmp_path / "fotos"))
+    db_session.commit()
+
+    from app.modelos import Producto
+    p = db_session.query(Producto).filter_by(sku="PC-003").first()
+    assert p.pzas_caja is None
+    assert p.pzas_40hq is None
