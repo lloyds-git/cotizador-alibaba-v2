@@ -283,22 +283,34 @@
           <div>
             <div class="font-bold text-lg" x-text="detalle.sku || '(sin SKU)'"></div>
             <div class="text-xs text-gray-500" x-text="detalle.proveedor || ''"></div>
-            <div class="text-xs text-gray-500">
-              <span x-text="detalle.categoria || '(sin categoria)'"></span>
+            <div class="text-xs text-gray-500 flex items-center flex-wrap gap-1">
+              <!-- Categoria editable inline: cambia el arancel y recalcula motor -->
+              <select :value="detalle.categoria || ''"
+                      @change="cambiarCategoriaDetalle($event.target)"
+                      class="border border-gray-200 rounded px-1 py-0.5 text-xs bg-white max-w-[180px]"
+                      title="Cambiar categoria recalcula arancel + 14 pasos">
+                <option value="">(sin categoria)</option>
+                <template x-for="c in categorias" :key="c.categoria || '__nil__'">
+                  <option :value="c.categoria || ''"
+                          x-show="c.categoria !== null"
+                          x-text="c.categoria"></option>
+                </template>
+                <option value="__nueva__">+ Crear nueva...</option>
+              </select>
               <span>
                 · Fracc <span class="font-mono" x-text="detalle.fraccion_arancelaria || '—'"></span>
                 · Tasa <span x-text="parseFloat(detalle.tasa_arancelaria_pct).toFixed(1)"></span>%
               </span>
-              <span class="text-[10px] ml-1"
+              <span class="text-[10px]"
                     :class="{
                       'text-green-600': detalle.tasa_arancelaria_fuente === 'override-db',
-                      'text-blue-600': detalle.tasa_arancelaria_fuente === 'tariffs-estatico',
+                      'text-blue-600': detalle.tasa_arancelaria_fuente === 'tariffs-estatico' || detalle.tasa_arancelaria_fuente === 'aranceles-db',
                       'text-orange-600': detalle.tasa_arancelaria_fuente === 'default-metal',
                       'text-gray-500': detalle.tasa_arancelaria_fuente === 'default-25'
                     }"
                     x-text="'(' + (detalle.tasa_arancelaria_fuente || '?') + ')'"></span>
-              <a href="/aranceles" class="ml-1 text-blue-500 hover:underline text-[10px]"
-                 title="Editar overrides de aranceles">[editar]</a>
+              <a href="/aranceles" class="text-blue-500 hover:underline text-[10px]"
+                 title="Editar fracciones estandar y overrides">[editar]</a>
             </div>
             <template x-if="origen && origen.existe">
               <div class="text-xs mt-1">
@@ -307,9 +319,11 @@
                    class="text-blue-600 hover:text-blue-800 underline cursor-pointer">
                   📄 Ver cotizacion original (<span x-text="origen.tipo"></span>)
                 </a>
-                <span class="text-gray-400 ml-1" x-show="origen.miembros && origen.miembros.length > 1">
-                  · <span x-text="origen.miembros.length"></span> archivos similares
-                </span>
+                <template x-if="origen.miembros && origen.miembros.length > 1">
+                  <span class="text-gray-400 ml-1">
+                    · <span x-text="origen.miembros.length"></span> archivos similares
+                  </span>
+                </template>
               </div>
             </template>
             <template x-if="origen && !origen.existe">
@@ -541,10 +555,12 @@
                       :class="utilidadAbs() >= 0 ? 'text-green-700' : 'text-red-700'"
                       x-text="'$ ' + utilidadAbs().toFixed(2)"></td>
                 </tr>
-                <tr class="text-gray-400 text-[10px]" x-show="retailEditado">
-                  <td class="pt-1">Retail c/IVA usado:</td>
-                  <td class="pt-1 text-right" x-text="'$ ' + retailEditado.toFixed(2)"></td>
-                </tr>
+                <template x-if="retailEditado">
+                  <tr class="text-gray-400 text-[10px]">
+                    <td class="pt-1">Retail c/IVA usado:</td>
+                    <td class="pt-1 text-right" x-text="'$ ' + retailEditado.toFixed(2)"></td>
+                  </tr>
+                </template>
               </tbody>
             </table>
 
@@ -831,7 +847,8 @@
       </template>
 
       <!-- Lista -->
-      <div x-show="!cbmCargando && cbmSugerencias !== null" class="overflow-auto flex-1">
+      <template x-if="!cbmCargando && cbmSugerencias !== null">
+       <div class="overflow-auto flex-1">
         <template x-if="cbmSugerencias.length === 0">
           <div class="text-center text-sm text-gray-500 py-8">
             ✓ No hay discrepancias. Todos los productos con <code>carton_dims</code> parseable
@@ -893,7 +910,8 @@
             </table>
           </div>
         </template>
-      </div>
+       </div>
+      </template>
 
       <!-- Botones -->
       <div class="flex justify-end gap-2 mt-3 border-t pt-3">
@@ -943,7 +961,8 @@
         </div>
       </template>
 
-      <div x-show="!pzas40Cargando && pzas40Sugerencias !== null" class="overflow-auto flex-1">
+      <template x-if="!pzas40Cargando && pzas40Sugerencias !== null">
+       <div class="overflow-auto flex-1">
         <template x-if="pzas40Sugerencias.length === 0">
           <div class="text-center text-sm text-gray-500 py-8">
             ✓ Todos los productos tienen <code>pzas_40hq</code> poblado.
@@ -1008,7 +1027,8 @@
             </table>
           </div>
         </template>
-      </div>
+       </div>
+      </template>
 
       <div class="flex justify-end gap-2 mt-3 border-t pt-3">
         <button type="button" @click="cerrarValidar40HQ()"
@@ -1262,6 +1282,48 @@ function productosApp() {
       } else {
         await this.actualizarCategoria(p, valor);
       }
+      // Si el panel del producto editado esta abierto, refrescar cotizacion
+      // (categoria afecta arancel -> motor) y snapshots (es_stale).
+      if (this.detalle && this.detalle.producto_id === p.id) {
+        this.detalle.categoria = p.categoria;
+        await this.refrescarDetalle();
+        await this.cargarSnapshots();
+      }
+    },
+
+    // Handler especifico del panel detalle: replica manejarCambioCategoria
+    // pero opera sobre detalle (no productos[]) y siempre refresca el motor.
+    async cambiarCategoriaDetalle(select) {
+      if (!this.detalle) return;
+      let valor = select.value;
+      if (valor === '__nueva__') {
+        const nombre = prompt('Nombre de la nueva categoria (ej. comederos, juguetes-gato):');
+        if (!nombre || !nombre.trim()) {
+          select.value = this.detalle.categoria || '';
+          return;
+        }
+        valor = nombre.trim().toLowerCase().replace(/\s+/g, '-');
+        if (this.categorias.some(c => c.categoria === valor)) {
+          if (!confirm(`La categoria '${valor}' ya existe. ¿Asignarla de todas formas?`)) {
+            select.value = this.detalle.categoria || '';
+            return;
+          }
+        }
+      }
+      const v = (valor || '').trim();
+      // Sincronizar grilla
+      const fila = this.productos.find(x => x.id === this.detalle.producto_id);
+      if (fila) fila.categoria = v || null;
+      this.detalle.categoria = v || null;
+      await fetch('/api/productos/' + this.detalle.producto_id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoria: v }),
+      });
+      await this.cargarCategorias();
+      if (this.categoriaFiltro) await this.cargar();
+      await this.refrescarDetalle();
+      await this.cargarSnapshots();
     },
 
     async marcarVisibles(marcado) {
