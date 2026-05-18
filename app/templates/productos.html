@@ -285,14 +285,14 @@
             <div class="text-xs text-gray-500" x-text="detalle.proveedor || ''"></div>
             <div class="text-xs text-gray-500 flex items-center flex-wrap gap-1">
               <!-- Categoria editable inline: cambia el arancel y recalcula motor -->
-              <select :value="detalle.categoria || ''"
-                      @change="cambiarCategoriaDetalle($event.target)"
+              <select @change="cambiarCategoriaDetalle($event.target)"
                       class="border border-gray-200 rounded px-1 py-0.5 text-xs bg-white max-w-[180px]"
                       title="Cambiar categoria recalcula arancel + 14 pasos">
-                <option value="">(sin categoria)</option>
+                <option value="" :selected="!detalle.categoria">(sin categoria)</option>
                 <template x-for="c in categorias" :key="c.categoria || '__nil__'">
                   <option :value="c.categoria || ''"
                           x-show="c.categoria !== null"
+                          :selected="detalle.categoria === c.categoria"
                           x-text="c.categoria"></option>
                 </template>
                 <option value="__nueva__">+ Crear nueva...</option>
