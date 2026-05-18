@@ -113,3 +113,38 @@ def test_catnip_a_juguetes():
 
 def test_travel_bottle_a_transporte():
     assert clasificar_descripcion("Pet outdoor travel bottle 500ml") == "transporte"
+
+
+# Casos derivados de productos reales que estaban sin clasificar en BD.
+
+def test_window_perch_a_camas():
+    assert clasificar_descripcion("Cat window Perch - 30*52cm") == "camas"
+
+
+def test_rice_box_a_alimentadores():
+    assert clasificar_descripcion("Folding Rice Box for pet food") == "alimentadores"
+
+
+def test_waste_bag_a_higiene():
+    assert clasificar_descripcion(
+        "Pet waste bags 1.5 micron thick, 14 rolls/box with dispenser"
+    ) == "higiene"
+
+
+def test_window_guard_a_rejas():
+    assert clasificar_descripcion(
+        "Window guard rail Size: L74*H80*W1.5cm, 78-86cm"
+    ) == "rejas"
+
+
+def test_door_guard_a_rejas():
+    assert clasificar_descripcion("Fixed Door Guard with screws") == "rejas"
+
+
+def test_inner_box_se_descarta():
+    assert clasificar_descripcion("Inner box (color box con diseno del buyer)") == "_descartar"
+    assert clasificar_descripcion("Inner box (corrugated brown, sin logo)") == "_descartar"
+
+
+def test_strengthen_clip_se_descarta():
+    assert clasificar_descripcion("Strengthen Clip de refuerzo") == "_descartar"

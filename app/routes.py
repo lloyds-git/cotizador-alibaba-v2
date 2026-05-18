@@ -2,15 +2,20 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import func, Integer, case, cast
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app.modelos import Producto, Proveedor, ArancelOverride, CostoAdicional, CotizacionSnapshot
+from app.modelos import (
+    Producto, Proveedor, ArancelOverride, CostoAdicional, CotizacionSnapshot,
+    Foto, Categoria, CategoriaKeyword, PatronDescarte,
+)
+from app.clasificador import clasificar_descripcion, invalidar_cache
+from app.ingest import cbm_desde_carton_dims, cbm_es_discrepante
 
 router = APIRouter()
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -58,6 +63,10 @@ class ActualizarBody(BaseModel):
 class MarcarBulkBody(BaseModel):
     ids: list[int]
     marcado: bool
+
+
+class BorrarBulkBody(BaseModel):
+    ids: list[int]
 
 
 def _aplicar_filtro_categoria(query, categoria: str | None):
@@ -138,34 +147,70 @@ def listar_proveedores(db: SesionDep):
 
 @router.get("/api/categorias")
 def listar_categorias(db: SesionDep):
-    """Devuelve categorias con total y cuantos marcados, ordenadas por total desc."""
-    # CAST a Integer porque marcado_cotizar es Boolean y SQLAlchemy convierte
-    # SUM(bool) -> bool (devuelve True en vez del conteo real).
-    filas = (
-        db.query(
-            Producto.categoria,
-            func.count(Producto.id).label("total"),
-            func.sum(
-                cast(
-                    case((Producto.marcado_cotizar.is_(True), 1), else_=0),
-                    Integer,
-                )
-            ).label("marcados"),
-        )
-        .group_by(Producto.categoria)
-        .all()
+    """Devuelve categorias con total y cuantos marcados.
+
+    Fuente: tabla 'categorias' (catalogo formal) + cualquier categoria
+    huerfana (presente en productos.categoria pero no en el catalogo) por
+    compatibilidad. El orden respeta el campo 'orden' del catalogo;
+    las huerfanas van al final.
+
+    Marcadores boolean: CAST a Integer porque SQLAlchemy convierte
+    SUM(bool) -> bool (devuelve True en vez del conteo real).
+    """
+    marcados_expr = func.sum(
+        cast(case((Producto.marcado_cotizar.is_(True), 1), else_=0), Integer)
     )
-    out = []
-    for cat, total, marcados in filas:
-        out.append(
-            {
-                "categoria": cat,
-                "total": int(total),
-                "marcados": int(marcados or 0),
-            }
+
+    # Conteos por valor presente en productos.categoria (incluyendo NULL)
+    conteos = {
+        cat: (int(total), int(marcados or 0))
+        for cat, total, marcados in (
+            db.query(
+                Producto.categoria,
+                func.count(Producto.id).label("total"),
+                marcados_expr.label("marcados"),
+            )
+            .group_by(Producto.categoria)
+            .all()
         )
-    # ordenar por total desc, dejando None al final
-    out.sort(key=lambda r: (r["categoria"] is None, -r["total"]))
+    }
+
+    out = []
+    slugs_catalogo = set()
+    for c in db.query(Categoria).order_by(Categoria.orden.asc(), Categoria.slug.asc()).all():
+        slugs_catalogo.add(c.slug)
+        total, marcados = conteos.get(c.slug, (0, 0))
+        out.append({
+            "categoria": c.slug,
+            "total": total,
+            "marcados": marcados,
+            "orden": c.orden,
+            "en_catalogo": True,
+        })
+
+    # Huerfanas: valores en productos.categoria que no estan en el catalogo
+    for cat, (total, marcados) in conteos.items():
+        if cat in slugs_catalogo or cat is None:
+            continue
+        out.append({
+            "categoria": cat,
+            "total": total,
+            "marcados": marcados,
+            "orden": 9999,
+            "en_catalogo": False,
+        })
+
+    # Categoria None (sin clasificar): siempre al final si hay productos asi
+    if None in conteos:
+        total, marcados = conteos[None]
+        out.append({
+            "categoria": None,
+            "total": total,
+            "marcados": marcados,
+            "orden": 99999,
+            "en_catalogo": False,
+        })
+
     return {"items": out}
 
 
@@ -191,6 +236,198 @@ def marcar_bulk(body: MarcarBulkBody, db: SesionDep):
     )
     db.commit()
     return {"ok": True, "afectados": n}
+
+
+def _borrar_productos_por_ids(db: Session, ids: list[int]) -> int:
+    """Borra productos y sus dependencias (snapshots, costos, fotos) en bulk.
+
+    No usamos cascade ORM en todos los relacionamientos (CostoAdicional y
+    CotizacionSnapshot usan backref sin cascade), asi que limpiamos a mano
+    en orden inverso de FK antes de borrar el Producto.
+    """
+    if not ids:
+        return 0
+    db.query(CotizacionSnapshot).filter(
+        CotizacionSnapshot.producto_id.in_(ids)
+    ).delete(synchronize_session=False)
+    db.query(CostoAdicional).filter(
+        CostoAdicional.producto_id.in_(ids)
+    ).delete(synchronize_session=False)
+    db.query(Foto).filter(Foto.producto_id.in_(ids)).delete(synchronize_session=False)
+    n = (
+        db.query(Producto)
+        .filter(Producto.id.in_(ids))
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return n
+
+
+@router.post("/api/productos/borrar-bulk")
+def borrar_bulk(body: BorrarBulkBody, db: SesionDep):
+    """Borra varios productos por id (con sus snapshots/costos/fotos)."""
+    n = _borrar_productos_por_ids(db, body.ids)
+    return {"ok": True, "borrados": n}
+
+
+EXTENSIONES_FOTO = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+MAX_FOTO_BYTES = 10 * 1024 * 1024  # 10 MB
+
+MAX_PDF_BYTES = 50 * 1024 * 1024  # 50 MB
+EXTENSIONES_PDF = {".pdf"}
+
+
+@router.post("/api/ingest/pdf")
+async def ingestar_pdf(
+    db: SesionDep,
+    file: UploadFile = File(...),
+    forzar: bool = Form(False),
+):
+    """Sube un PDF de cotizacion y lo ingesta a la BD.
+
+    Flujo: guarda el PDF en PDF_INGEST_DIR -> corre pdf_a_formato_hd.py
+    -> ingestar_xlsx_intermedio -> gate de calidad.
+
+    Si el gate veredicto es REINGESTAR y forzar=False, devuelve 422 con
+    motivo. El cliente puede reintentar con forzar=True.
+    """
+    from app.pdf_pipeline import procesar_pdf, PdfPipelineError
+
+    nombre_orig = file.filename or ""
+    ext = Path(nombre_orig).suffix.lower()
+    if ext not in EXTENSIONES_PDF:
+        raise HTTPException(
+            400,
+            f"Extension no permitida: '{ext}'. Solo se acepta .pdf",
+        )
+
+    contenido = await file.read()
+    if not contenido:
+        raise HTTPException(400, "Archivo vacio")
+    if len(contenido) > MAX_PDF_BYTES:
+        # 413 Payload Too Large
+        raise HTTPException(
+            413,
+            f"Archivo demasiado grande ({len(contenido) // (1024*1024)} MB, max {MAX_PDF_BYTES // (1024*1024)} MB)",
+        )
+
+    proyecto = Path(__file__).parent.parent
+    ingest_dir = _pdf_ingest_dir()
+    ingest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sanitiza el nombre: solo basename, conserva extension. Si ya existe,
+    # agrega sufijo _{epoch} antes de la extension para no pisar.
+    base = Path(nombre_orig).name or "upload.pdf"
+    destino = ingest_dir / base
+    if destino.exists():
+        import time
+        stem = destino.stem
+        destino = ingest_dir / f"{stem}_{int(time.time())}{ext}"
+    destino.write_bytes(contenido)
+
+    fotos_destino = proyecto / "data" / "fotos"
+    fotos_destino.mkdir(parents=True, exist_ok=True)
+
+    try:
+        resultado = procesar_pdf(
+            session=db,
+            pdf_path=destino,
+            fotos_destino=fotos_destino,
+            forzar_calidad=forzar,
+        )
+    except PdfPipelineError as e:
+        raise HTTPException(500, str(e))
+
+    if not resultado.get("ok"):
+        # Gate REINGESTAR: 422 con motivo y bandera puede_forzar
+        return JSONResponse(status_code=422, content=resultado)
+    return resultado
+
+
+@router.post("/api/productos/{producto_id}/foto")
+async def subir_foto(producto_id: int, db: SesionDep, file: UploadFile = File(...)):
+    """Sube o reemplaza la foto principal del producto.
+
+    Si ya existia una foto principal: borra el archivo del disco y la fila Foto.
+    Guarda la nueva en data/fotos/ con nombre derivado del producto + epoch.
+    """
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+
+    nombre_orig = file.filename or ""
+    ext = Path(nombre_orig).suffix.lower()
+    if ext not in EXTENSIONES_FOTO:
+        raise HTTPException(
+            400,
+            f"Extension no permitida: '{ext}'. Permitidas: {sorted(EXTENSIONES_FOTO)}",
+        )
+
+    contenido = await file.read()
+    if not contenido:
+        raise HTTPException(400, "Archivo vacio")
+    if len(contenido) > MAX_FOTO_BYTES:
+        raise HTTPException(
+            400,
+            f"Archivo demasiado grande ({len(contenido)} bytes, max {MAX_FOTO_BYTES})",
+        )
+
+    proyecto = Path(__file__).parent.parent
+    fotos_dir = proyecto / "data" / "fotos"
+    fotos_dir.mkdir(parents=True, exist_ok=True)
+
+    # Naming: {producto_id}_user_{epoch}{ext}. El prefijo "_user_" diferencia
+    # de las fotos importadas (formato {prov}_{seq}_{sku}) y el epoch evita
+    # colision al reemplazar varias veces el mismo producto.
+    import time
+    nombre_nuevo = f"{producto_id}_user_{int(time.time())}{ext}"
+    destino = fotos_dir / nombre_nuevo
+    destino.write_bytes(contenido)
+
+    # Borrar foto(s) previa(s): archivo en disco + filas. Si el archivo no
+    # existe (ya fue borrado manualmente), no aborta.
+    fotos_viejas = db.query(Foto).filter_by(producto_id=producto_id).all()
+    for f in fotos_viejas:
+        rel = (f.ruta_relativa or "").replace("\\", "/")
+        # rel viene como "fotos/<nombre>"; resolvemos contra data/
+        if rel.startswith("fotos/"):
+            archivo_viejo = proyecto / "data" / rel
+            try:
+                if archivo_viejo.exists() and archivo_viejo.resolve().is_relative_to(fotos_dir.resolve()):
+                    archivo_viejo.unlink()
+            except (OSError, ValueError):
+                pass
+        db.delete(f)
+
+    nueva = Foto(
+        producto_id=producto_id,
+        ruta_relativa=f"fotos/{nombre_nuevo}",
+        es_principal=True,
+    )
+    db.add(nueva)
+    db.commit()
+    db.refresh(nueva)
+    return {
+        "ok": True,
+        "id": nueva.id,
+        "ruta_relativa": nueva.ruta_relativa,
+        "url": f"/{nueva.ruta_relativa}",
+    }
+
+
+@router.delete("/api/proveedores/{proveedor_id}/productos")
+def borrar_productos_de_proveedor(proveedor_id: int, db: SesionDep):
+    """Borra TODOS los productos de un proveedor (con sus dependencias)."""
+    pv = db.get(Proveedor, proveedor_id)
+    if not pv:
+        raise HTTPException(404, "Proveedor no existe")
+    ids = [
+        pid for (pid,) in db.query(Producto.id)
+        .filter(Producto.proveedor_id == proveedor_id)
+        .all()
+    ]
+    n = _borrar_productos_por_ids(db, ids)
+    return {"ok": True, "borrados": n, "proveedor": pv.nombre}
 
 
 def _pdf_ingest_dir() -> Path:
@@ -350,14 +587,17 @@ def ver_cotizacion_original(producto_id: int, db: SesionDep, descargar: int = 0)
     ruta = info["ruta"]
     tipo = info["tipo"]
     if tipo == ".pdf":
-        nombre_safe = ruta.name.replace('"', '\\"')
         # ?descargar=1 fuerza attachment; default es inline para que se
         # renderice en el <embed> del visor.
+        # Usamos content_disposition_type + filename para que starlette arme
+        # el header con encoding RFC 5987 (filename*=UTF-8'') — necesario
+        # cuando el nombre tiene caracteres no-latin-1 (ej. chino).
         disposition = "attachment" if descargar else "inline"
         return FileResponse(
             str(ruta),
             media_type="application/pdf",
-            headers={"Content-Disposition": f'{disposition}; filename="{nombre_safe}"'},
+            filename=ruta.name,
+            content_disposition_type=disposition,
         )
     return FileResponse(str(ruta), filename=ruta.name, media_type="application/octet-stream")
 
@@ -495,7 +735,17 @@ def actualizar(producto_id: int, body: ActualizarBody, db: SesionDep):
         p.marcado_cotizar = body.marcado_cotizar
     if body.categoria is not None:
         # Cadena vacia significa "limpiar"
-        p.categoria = body.categoria.strip() or None
+        nueva_cat = body.categoria.strip() or None
+        p.categoria = nueva_cat
+        # Auto-registrar la categoria en el catalogo si es nueva. Asi la UI
+        # y la BD quedan sincronizadas: cualquier valor visible en el
+        # dropdown existe en la tabla 'categorias' (con orden=999 y sin
+        # keywords; queda como manual hasta que se le agreguen via YAML).
+        # No aplica al sentinela '_descartar' (no es categoria real).
+        if nueva_cat and nueva_cat != "_descartar":
+            existe = db.query(Categoria).filter_by(slug=nueva_cat).first()
+            if existe is None:
+                db.add(Categoria(slug=nueva_cat, orden=999))
     if body.subcategoria is not None:
         p.subcategoria = body.subcategoria.strip() or None
     # Campos del producto editables desde el panel de detalle.
@@ -525,6 +775,70 @@ def actualizar(producto_id: int, body: ActualizarBody, db: SesionDep):
         p.lead_time = body.lead_time.strip() or None
     db.commit()
     return {"ok": True}
+
+
+class CbmAplicarBody(BaseModel):
+    ids: list[int]
+
+
+@router.get("/api/cbm/sugerencias")
+def cbm_sugerencias(db: SesionDep):
+    """Lista productos con CBM faltante o discrepante respecto a carton_dims.
+
+    Usa el mismo criterio que el auto-derive del ingest: si cbm es None/<=0 y
+    carton_dims parsea, sugiere el calculado. Si cbm difiere >50% del calculado,
+    marca como discrepancia.
+    """
+    productos = db.query(Producto).all()
+    items = []
+    for p in productos:
+        cbm_calc = cbm_desde_carton_dims(p.carton_dims)
+        if cbm_calc is None or cbm_calc <= 0:
+            continue
+        cbm_db = p.cbm
+        if cbm_db is None or cbm_db <= 0:
+            estado = "falta"
+        elif cbm_es_discrepante(cbm_db, cbm_calc):
+            estado = "discrepancia"
+        else:
+            continue
+        items.append({
+            "producto_id": p.id,
+            "sku": p.sku,
+            "descripcion": p.descripcion,
+            "carton_dims": p.carton_dims,
+            "cbm_actual": cbm_db,
+            "cbm_calculado": cbm_calc,
+            "estado": estado,
+        })
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/api/cbm/aplicar")
+def cbm_aplicar(body: CbmAplicarBody, db: SesionDep):
+    """Aplica el CBM calculado desde carton_dims a los productos indicados.
+
+    No-op silencioso si el producto no tiene carton_dims parseable: queda
+    fuera del array `aplicados` para que la UI muestre la situacion.
+    """
+    aplicados = []
+    sin_cambio = []
+    for pid in body.ids:
+        p = db.get(Producto, pid)
+        if not p:
+            continue
+        cbm_calc = cbm_desde_carton_dims(p.carton_dims)
+        if cbm_calc is None or cbm_calc <= 0:
+            sin_cambio.append({"producto_id": pid, "motivo": "carton_dims no parseable"})
+            continue
+        aplicados.append({
+            "producto_id": pid,
+            "cbm_anterior": p.cbm,
+            "cbm_nuevo": cbm_calc,
+        })
+        p.cbm = cbm_calc
+    db.commit()
+    return {"ok": True, "aplicados": aplicados, "sin_cambio": sin_cambio}
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -1254,4 +1568,242 @@ def pagina_aranceles(request: Request, db: SesionDep):
         request,
         "aranceles.html",
         {"categorias_disponibles": categorias},
+    )
+
+
+# ============================================================
+# Catalogo de categorias (CRUD + patrones de descarte)
+# ============================================================
+#
+# BD es la fuente de verdad para el clasificador en runtime. El YAML
+# config/categorias.yml es solo seed inicial: las ediciones via UI van
+# directo a BD y NO se sincronizan al YAML. Tras cualquier mutacion se
+# invalida el cache del clasificador.
+
+
+import re as _re
+
+
+SLUG_VALIDO = _re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+class CategoriaBody(BaseModel):
+    slug: str
+    orden: int = 100
+
+
+class KeywordsBody(BaseModel):
+    keywords: list[str]
+
+
+class PatronDescarteBody(BaseModel):
+    patron: str
+    nota: str | None = None
+
+
+def _cat_a_dict(c: Categoria, conteo_productos: int) -> dict:
+    return {
+        "id": c.id,
+        "slug": c.slug,
+        "orden": c.orden,
+        "keywords": sorted(kw.keyword for kw in c.keywords),
+        "productos": conteo_productos,
+    }
+
+
+def _validar_slug(slug: str):
+    slug = (slug or "").strip().lower()
+    if not slug:
+        raise HTTPException(422, "slug vacio")
+    if slug == "_descartar":
+        raise HTTPException(422, "'_descartar' es reservada por el sistema")
+    if not SLUG_VALIDO.match(slug):
+        raise HTTPException(
+            422,
+            "slug invalido: usa minusculas, numeros, guion o guion-bajo "
+            "(ej. 'casa-jaula'). Sin espacios ni acentos.",
+        )
+    return slug
+
+
+@router.get("/api/catalogo/categorias")
+def catalogo_listar(db: SesionDep):
+    """Lista categorias del catalogo con keywords y conteo de productos."""
+    conteos = dict(
+        db.query(Producto.categoria, func.count(Producto.id))
+        .filter(Producto.categoria.isnot(None))
+        .group_by(Producto.categoria)
+        .all()
+    )
+    items = []
+    for c in (
+        db.query(Categoria)
+        .order_by(Categoria.orden.asc(), Categoria.slug.asc())
+        .all()
+    ):
+        items.append(_cat_a_dict(c, int(conteos.get(c.slug, 0))))
+    return {"items": items}
+
+
+@router.post("/api/catalogo/categorias")
+def catalogo_crear(body: CategoriaBody, db: SesionDep):
+    slug = _validar_slug(body.slug)
+    if db.query(Categoria).filter_by(slug=slug).first():
+        raise HTTPException(409, f"Ya existe una categoria con slug '{slug}'")
+    c = Categoria(slug=slug, orden=body.orden)
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    invalidar_cache()
+    return _cat_a_dict(c, 0)
+
+
+@router.patch("/api/catalogo/categorias/{cat_id}")
+def catalogo_editar(cat_id: int, body: CategoriaBody, db: SesionDep):
+    c = db.get(Categoria, cat_id)
+    if not c:
+        raise HTTPException(404, "Categoria no existe")
+    slug_nuevo = _validar_slug(body.slug)
+    if slug_nuevo != c.slug:
+        if db.query(Categoria).filter_by(slug=slug_nuevo).first():
+            raise HTTPException(409, f"Ya existe '{slug_nuevo}'")
+        # Renombrar el valor en productos.categoria para no orfanar nada
+        db.query(Producto).filter(Producto.categoria == c.slug).update(
+            {"categoria": slug_nuevo}, synchronize_session=False
+        )
+        c.slug = slug_nuevo
+    c.orden = body.orden
+    db.commit()
+    n = (
+        db.query(func.count(Producto.id))
+        .filter(Producto.categoria == c.slug)
+        .scalar()
+    )
+    invalidar_cache()
+    return _cat_a_dict(c, int(n or 0))
+
+
+@router.delete("/api/catalogo/categorias/{cat_id}")
+def catalogo_eliminar(cat_id: int, db: SesionDep):
+    c = db.get(Categoria, cat_id)
+    if not c:
+        raise HTTPException(404, "Categoria no existe")
+    n = (
+        db.query(func.count(Producto.id))
+        .filter(Producto.categoria == c.slug)
+        .scalar()
+    )
+    if n:
+        raise HTTPException(
+            409,
+            f"No se puede borrar: {int(n)} productos siguen asignados a "
+            f"'{c.slug}'. Reasignalos antes.",
+        )
+    db.delete(c)
+    db.commit()
+    invalidar_cache()
+    return {"ok": True}
+
+
+@router.put("/api/catalogo/categorias/{cat_id}/keywords")
+def catalogo_keywords(cat_id: int, body: KeywordsBody, db: SesionDep):
+    """Reemplaza la lista completa de keywords de la categoria."""
+    c = db.get(Categoria, cat_id)
+    if not c:
+        raise HTTPException(404, "Categoria no existe")
+    # Normalizar: lowercase, sin espacios al borde, sin vacios, sin duplicados
+    limpias = []
+    vistas = set()
+    for kw in body.keywords:
+        k = (kw or "").strip().lower()
+        if not k or k in vistas:
+            continue
+        vistas.add(k)
+        limpias.append(k)
+    db.query(CategoriaKeyword).filter_by(categoria_id=c.id).delete()
+    for k in limpias:
+        db.add(CategoriaKeyword(categoria_id=c.id, keyword=k))
+    db.commit()
+    invalidar_cache()
+    n = (
+        db.query(func.count(Producto.id))
+        .filter(Producto.categoria == c.slug)
+        .scalar()
+    )
+    db.refresh(c)
+    return _cat_a_dict(c, int(n or 0))
+
+
+@router.get("/api/catalogo/patrones-descarte")
+def patrones_listar(db: SesionDep):
+    rows = db.query(PatronDescarte).order_by(PatronDescarte.id.asc()).all()
+    return {
+        "items": [
+            {"id": p.id, "patron": p.patron, "nota": p.nota} for p in rows
+        ]
+    }
+
+
+@router.post("/api/catalogo/patrones-descarte")
+def patrones_crear(body: PatronDescarteBody, db: SesionDep):
+    patron = (body.patron or "").strip()
+    if not patron:
+        raise HTTPException(422, "patron vacio")
+    try:
+        _re.compile(patron, _re.IGNORECASE)
+    except _re.error as e:
+        raise HTTPException(422, f"regex invalido: {e}")
+    if db.query(PatronDescarte).filter_by(patron=patron).first():
+        raise HTTPException(409, "Ese patron ya existe")
+    p = PatronDescarte(patron=patron, nota=(body.nota or "").strip() or None)
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    invalidar_cache()
+    return {"id": p.id, "patron": p.patron, "nota": p.nota}
+
+
+@router.delete("/api/catalogo/patrones-descarte/{pat_id}")
+def patrones_eliminar(pat_id: int, db: SesionDep):
+    p = db.get(PatronDescarte, pat_id)
+    if not p:
+        raise HTTPException(404, "Patron no existe")
+    db.delete(p)
+    db.commit()
+    invalidar_cache()
+    return {"ok": True}
+
+
+@router.post("/api/catalogo/reclasificar-sin-categoria")
+def reclasificar_sin_categoria(db: SesionDep):
+    """Aplica el clasificador a productos con categoria IS NULL.
+
+    No toca productos ya clasificados. Devuelve {asignados, sin_match}.
+    """
+    invalidar_cache()
+    asignados = 0
+    sin_match = 0
+    for p in db.query(Producto).filter(Producto.categoria.is_(None)).all():
+        cat = clasificar_descripcion(p.descripcion)
+        if cat is None:
+            sin_match += 1
+        else:
+            p.categoria = cat
+            asignados += 1
+    db.commit()
+    return {"asignados": asignados, "sin_match": sin_match}
+
+
+@router.get("/categorias", response_class=HTMLResponse)
+def pagina_categorias(request: Request, db: SesionDep):
+    """Pagina CRUD del catalogo de categorias y patrones de descarte."""
+    sin_categoria = (
+        db.query(func.count(Producto.id))
+        .filter(Producto.categoria.is_(None))
+        .scalar()
+    )
+    return TEMPLATES.TemplateResponse(
+        request,
+        "categorias.html",
+        {"productos_sin_categoria": int(sin_categoria or 0)},
     )

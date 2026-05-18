@@ -158,6 +158,42 @@ def _to_int(v) -> int | None:
     return int(f) if f is not None else None
 
 
+# CBM derivable desde "L*W*H cm" (a veces "L x W x H" o con espacios).
+_RE_CARTON_LWH = re.compile(r"(\d+\.?\d*)\s*[*x×]\s*(\d+\.?\d*)\s*[*x×]\s*(\d+\.?\d*)")
+
+
+def cbm_desde_carton_dims(carton_dims: str | None) -> float | None:
+    """Calcula CBM (m3/caja) parseando 'L*W*H cm' del carton master.
+
+    Acepta separadores '*', 'x' o '×'. Devuelve None si no parsea.
+    """
+    if not carton_dims:
+        return None
+    m = _RE_CARTON_LWH.search(carton_dims)
+    if not m:
+        return None
+    try:
+        L, W, H = (float(g) for g in m.groups())
+    except ValueError:
+        return None
+    if L <= 0 or W <= 0 or H <= 0:
+        return None
+    return round(L * W * H / 1_000_000, 4)
+
+
+def cbm_es_discrepante(cbm_db: float | None, cbm_calc: float | None) -> bool:
+    """True si el CBM guardado difiere >50% del calculado desde carton_dims.
+
+    Usa el mismo umbral que la auto-derivacion del ingest y el script
+    fix_cbm_y_derivar_piezas: ratio >1.5x o <0.67x indica que Claude se
+    equivoco al leer el PDF (tipico: confunde CBM total con CBM/caja).
+    """
+    if cbm_db is None or cbm_db <= 0 or cbm_calc is None or cbm_calc <= 0:
+        return False
+    ratio = cbm_db / cbm_calc
+    return ratio > 1.5 or ratio < 0.67
+
+
 def _extraer_imagenes_xlsx(xlsx_path: str) -> dict[int, bytes]:
     """
     Devuelve {fila_excel: bytes_de_imagen} para imagenes ancladas en col A.
@@ -328,7 +364,20 @@ def ingestar_xlsx_intermedio(
         prod.moq = str(ws.cell(fila, COL_MOQ).value or "").strip()
         prod.packing = str(ws.cell(fila, COL_PACKING).value or "").strip()
         prod.carton_dims = str(ws.cell(fila, COL_CARTON).value or "").strip()
-        prod.cbm = _to_float(ws.cell(fila, COL_CBM).value)
+        cbm_leido = _to_float(ws.cell(fila, COL_CBM).value)
+        cbm_calc = cbm_desde_carton_dims(prod.carton_dims)
+        # Si Claude no leyo CBM, derivar del carton. Si lo leyo pero esta
+        # >50% off respecto al calculo (sintoma tipico: lee "0.025" como
+        # "0.25", o confunde CBM/caja con CBM total), confiar en la
+        # geometria del carton.
+        if cbm_leido is None or cbm_leido <= 0:
+            prod.cbm = cbm_calc
+        elif cbm_calc and cbm_calc > 0 and (
+            cbm_leido / cbm_calc > 1.5 or cbm_leido / cbm_calc < 0.67
+        ):
+            prod.cbm = cbm_calc
+        else:
+            prod.cbm = cbm_leido
         prod.pzas_20ft = _to_int(ws.cell(fila, COL_PZAS20).value)
         prod.pzas_40hq = _to_int(ws.cell(fila, COL_PZAS40).value)
         prod.lead_time = str(ws.cell(fila, COL_LEAD).value or "").strip()

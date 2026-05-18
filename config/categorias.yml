@@ -1,0 +1,221 @@
+# Catalogo de categorias y keywords del clasificador heuristico.
+#
+# Fuente de verdad. Para que los cambios surtan efecto en BD:
+#     python -m app.cli seed-categorias
+#
+# Reglas del archivo:
+#   - 'orden' define prioridad: numero menor gana. Categorias mas
+#     especificas deben ir antes que las genericas. Ejemplo: 'pajaros'
+#     antes que 'alimentadores' porque "hummingbird feeder" es pajaros.
+#   - 'casa-jaula' al final porque es muy generico ('plastic pet kennel'
+#     matchea muchas cosas).
+#   - Keywords son substrings case-insensitive sobre la descripcion completa.
+#     No son regex.
+#
+# Patrones de descarte: si la descripcion completa matchea cualquiera,
+# se marca categoria='_descartar' (notas de pricing/empaque/etiquetas
+# sueltas que Claude tomo como producto). Estos SI son regex.
+
+categorias:
+  - slug: pajaros
+    orden: 10
+    keywords: [bird, hummingbird, pajaro, bird nest]
+
+  - slug: rejas
+    orden: 20
+    keywords:
+      - pet gate
+      - pet fence
+      - " gate "
+      - fence
+      - puerta gat
+      - metal gate
+      - pet door
+      - puerta para
+      - guard rail
+      - window guard
+      - door guard
+
+  - slug: bebederos
+    orden: 30
+    keywords:
+      - water dispenser
+      - water fountain
+      - water feeder
+      - bebedero
+      - fuente de agua
+      - dispenser de agua
+      - water bottle
+
+  - slug: alimentadores
+    orden: 40
+    keywords:
+      - food feeder
+      - feeder
+      - comedero
+      - elevated bowl
+      - pet bowl
+      - food storage
+      - food container
+      - dog bowl
+      - feeding bowl
+      - food bowl
+      - feeding cup
+      - feeding mat
+      - licking mat
+      - double bowl
+      - slow-eating bowl
+      - slow eating
+      - stainless steel bowl
+      - dispensador de comida
+      - automatic refilling
+      - food tray
+      - stand bowl
+      - single bowl
+      - floating bowl
+      - feeding table
+      - dining table
+      - ceramic bowl
+      - canned lid
+      - can spoon
+      - lid and spoon
+      - pet scissor
+      - iron frame ceramic
+      - food storage cup
+      - food storage bucket
+      - rice box
+      - food box
+
+  - slug: camas
+    orden: 50
+    keywords:
+      - pet bed
+      - dog bed
+      - cat bed
+      - cama gat
+      - cama de gato
+      - cama perro
+      - window cat bed
+      - pet cushion
+      - nest
+      - perch
+      - window perch
+
+  - slug: transporte
+    orden: 60
+    keywords:
+      - pet carrier
+      - carrier bag
+      - pet backpack
+      - backpack
+      - transportador
+      - car seat
+      - car nest
+      - pet bag
+      - bolsa para mascot
+      - mochila
+      - shoulder bag
+      - travel bag
+      - pet stroller
+      - stroller
+      - pet cart
+      - seat cover
+      - air box
+      - carrier
+      - pet outings
+      - outings suitcase
+      - travel bottle
+      - outdoor water
+      - outdoor travel
+      - portable food
+      - portable pet
+
+  - slug: correas
+    orden: 70
+    keywords: [leash, harness, collar, correa, arnes]
+
+  - slug: juguetes
+    orden: 80
+    keywords:
+      - pet toy
+      - dog toy
+      - cat toy
+      - juguete
+      - plush
+      - peluche
+      - rope toy
+      - cat tunnel
+      - tunnel toy
+      - carousel toy
+      - catnip
+      - feather toy
+      - strawberry catnip
+
+  - slug: higiene
+    orden: 90
+    keywords:
+      - pet potty
+      - dog toilet
+      - litter
+      - arenero
+      - pasto sintet
+      - cesped
+      - soap dispenser
+      - comb
+      - brush
+      - grooming
+      - dematting
+      - paw cleaner
+      - paw washer
+      - paw washing
+      - hair remover
+      - lint roller
+      - bath brush
+      - spray brush
+      - bathing
+      - cleaning grooming
+      - waste bag
+      - poop bag
+
+  - slug: ropa-zapatos
+    orden: 100
+    keywords: [pet clothes, dog clothes, pet shoes, ropa para, zapatos para]
+
+  # casa-jaula al final porque es generico
+  - slug: casa-jaula
+    orden: 200
+    keywords: [kennel, dog house, pet house, casa de perro, jaula, cage]
+
+patrones_descarte:
+  - patron: '^\s*box\s+\d'
+    nota: '"Box 1", "Box 2" — etiqueta de empaque'
+  - patron: '^\s*\d+\s+(box|stacking)\s*/?\s*$'
+    nota: '"1 box", "2 stacking" — cantidades sueltas'
+  - patron: '^\s*\d+\s+box\s+\d'
+    nota: '"1 box 1" — cantidad+etiqueta'
+  - patron: 'sticker label'
+    nota: 'fragmento de empaque'
+  - patron: 'opp bag'
+    nota: 'tipo de bolsa de empaque'
+  - patron: 'foam bag'
+    nota: 'tipo de bolsa de empaque'
+  - patron: '^fob ningbo'
+    nota: 'nota de pricing FOB'
+  - patron: '^vip price'
+    nota: 'nota de pricing'
+  - patron: '^\s*\d+\.\d+\s+\d+\s*$'
+    nota: '"0.94 1" — pricing suelto'
+  - patron: '^\s*\d+\s+\d+\s*1\s*$'
+    nota: 'pricing suelto'
+  - patron: '^the filter element replacement$'
+    nota: 'componente de empaque'
+  - patron: '^remote control by app'
+    nota: 'feature descriptiva, no producto'
+  - patron: '^usb (led )?set'
+    nota: 'componente'
+  - patron: '^national standard plug'
+    nota: 'feature de plug, no producto'
+  - patron: '^inner box'
+    nota: 'caja interior (color box o corrugado), no producto'
+  - patron: '^strengthen clip'
+    nota: 'componente de refuerzo'

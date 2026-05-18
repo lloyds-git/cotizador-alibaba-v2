@@ -1,9 +1,8 @@
-"""
-Clasificador heuristico de productos por keywords sobre la descripcion.
+"""Clasificador heuristico por keywords sobre la descripcion.
 
-Las categorias estan alineadas con el plan original (PLAN_CONSOLIDADOS_POR_CATEGORIA.md):
-mascotas, viaje, casa-jaula, alimentadores, rejas, correas, juguetes,
-camas, higiene, ropa-zapatos, pajaros, silicona, pasto.
+Las reglas viven en config/categorias.yml (fuente de verdad). Si la BD
+tiene la tabla 'categorias' poblada via 'python -m app.cli seed-categorias',
+se lee de ahi (mas rapido). Si no, se lee directo del YAML.
 
 Categoria especial '_descartar': productos que en realidad son fragmentos
 de pricing/empaque/notas del proveedor que Claude tomo como producto.
@@ -12,84 +11,96 @@ de pricing/empaque/notas del proveedor que Claude tomo como producto.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+from pathlib import Path
+from typing import NamedTuple
+
+import yaml
 
 
-# Patrones que detectan filas que NO son productos (notas de pricing,
-# fragmentos de empaque, etiquetas sueltas). Si la descripcion completa
-# matchea cualquiera, marcamos categoria='_descartar'.
-PATRONES_DESCARTAR = [
-    re.compile(r"^\s*box\s+\d", re.IGNORECASE),
-    re.compile(r"^\s*\d+\s+(box|stacking)\s*/?\s*$", re.IGNORECASE),
-    re.compile(r"^\s*\d+\s+box\s+\d", re.IGNORECASE),
-    re.compile(r"sticker label", re.IGNORECASE),
-    re.compile(r"opp bag", re.IGNORECASE),
-    re.compile(r"foam bag", re.IGNORECASE),
-    re.compile(r"^fob ningbo", re.IGNORECASE),
-    re.compile(r"^vip price", re.IGNORECASE),
-    re.compile(r"^\s*\d+\.\d+\s+\d+\s*$"),  # "0.94 1"
-    re.compile(r"^\s*\d+\s+\d+\s*1\s*$"),
-    re.compile(r"^the filter element replacement$", re.IGNORECASE),
-    re.compile(r"^remote control by app", re.IGNORECASE),
-    re.compile(r"^usb (led )?set", re.IGNORECASE),
-    re.compile(r"^national standard plug", re.IGNORECASE),
-]
+PROYECTO_ROOT = Path(__file__).resolve().parent.parent
+YAML_PATH = PROYECTO_ROOT / "config" / "categorias.yml"
 
-# Orden importa: primer match gana. Categorias mas especificas primero.
-REGLAS_CATEGORIA = [
-    # (categoria, lista de keywords minusculas a buscar en descripcion)
-    # pajaros antes que alimentadores: 'hummingbird feeder' es pajaros
-    ("pajaros", ["bird", "hummingbird", "pajaro", "bird nest"]),
-    ("rejas", ["pet gate", "pet fence", " gate ", "fence", "puerta gat",
-               "metal gate", "pet door", "puerta para"]),
-    ("bebederos", ["water dispenser", "water fountain", "water feeder",
-                   "bebedero", "fuente de agua", "dispenser de agua",
-                   "water bottle"]),
-    ("alimentadores", ["food feeder", "feeder", "comedero", "elevated bowl",
-                       "pet bowl", "food storage", "food container",
-                       "dog bowl", "feeding bowl", "food bowl",
-                       "feeding cup", "feeding mat", "licking mat",
-                       "double bowl", "slow-eating bowl", "slow eating",
-                       "stainless steel bowl", "dispensador de comida",
-                       "automatic refilling", "food tray",
-                       "stand bowl", "single bowl", "floating bowl",
-                       "feeding table", "dining table", "ceramic bowl",
-                       "pet bowl", "canned lid", "can spoon", "lid and spoon",
-                       "pet scissor", "single bowl", "iron frame ceramic",
-                       "food storage cup", "food storage bucket"]),
-    ("camas", ["pet bed", "dog bed", "cat bed", "cama gat", "cama de gato",
-               "cama perro", "window cat bed", "pet cushion", "nest"]),
-    ("transporte", ["pet carrier", "carrier bag", "pet backpack", "backpack",
-                    "transportador", "car seat", "car nest", "pet bag",
-                    "bolsa para mascot", "mochila", "shoulder bag",
-                    "travel bag", "pet stroller", "stroller", "pet cart",
-                    "seat cover", "air box", "carrier", "pet outings",
-                    "outings suitcase", "travel bottle", "outdoor water",
-                    "outdoor travel", "portable food", "portable pet"]),
-    ("correas", ["leash", "harness", "collar", "correa", "arnes"]),
-    ("juguetes", ["pet toy", "dog toy", "cat toy", "juguete", "plush",
-                  "peluche", "rope toy", "cat tunnel", "tunnel toy",
-                  "carousel toy", "catnip", "feather toy", "strawberry catnip"]),
-    ("higiene", ["pet potty", "dog toilet", "litter", "arenero", "pasto sintet",
-                 "cesped", "soap dispenser", "comb", "brush", "grooming",
-                 "dematting", "paw cleaner", "paw washer", "paw washing",
-                 "hair remover", "lint roller", "bath brush", "spray brush",
-                 "bathing", "cleaning grooming"]),
-    ("ropa-zapatos", ["pet clothes", "dog clothes", "pet shoes", "ropa para",
-                      "zapatos para"]),
-    # casa-jaula al final porque es muy generico ('plastic pet kennel'
-    # matchea muchas cosas)
-    ("casa-jaula", ["kennel", "dog house", "pet house", "casa de perro",
-                    "jaula", "cage"]),
-]
+
+class Reglas(NamedTuple):
+    # (slug, [keywords]) ordenada por prioridad ('orden' asc).
+    categorias: list[tuple[str, list[str]]]
+    # Regex compiladas para descarte.
+    patrones_descarte: list[re.Pattern]
+
+
+@lru_cache(maxsize=1)
+def _cargar_reglas() -> Reglas:
+    """Carga reglas: BD si esta sembrada, sino YAML.
+
+    Cacheado. Si actualizas keywords en runtime, llama invalidar_cache().
+    """
+    reglas_bd = _intentar_bd()
+    if reglas_bd is not None:
+        return reglas_bd
+    return _cargar_yaml()
+
+
+def _intentar_bd() -> Reglas | None:
+    """Devuelve reglas desde la BD si la tabla existe y tiene filas."""
+    try:
+        from app.db import get_session_factory
+        from app.modelos import Categoria, PatronDescarte
+    except Exception:
+        return None
+
+    try:
+        Session = get_session_factory()
+        with Session() as ses:
+            cats = (
+                ses.query(Categoria)
+                .order_by(Categoria.orden.asc(), Categoria.id.asc())
+                .all()
+            )
+            if not cats:
+                return None
+            categorias = [
+                (c.slug, [kw.keyword.lower() for kw in c.keywords])
+                for c in cats
+            ]
+            patrones = [
+                re.compile(p.patron, re.IGNORECASE)
+                for p in ses.query(PatronDescarte).all()
+            ]
+            return Reglas(categorias=categorias, patrones_descarte=patrones)
+    except Exception:
+        # tabla no existe, BD bloqueada, etc.
+        return None
+
+
+def _cargar_yaml() -> Reglas:
+    with YAML_PATH.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    cats_yaml = sorted(
+        data.get("categorias", []),
+        key=lambda c: (c.get("orden", 100), c["slug"]),
+    )
+    categorias = [
+        (c["slug"], [kw.lower() for kw in c.get("keywords", []) if kw])
+        for c in cats_yaml
+    ]
+    patrones = [
+        re.compile(p["patron"], re.IGNORECASE)
+        for p in data.get("patrones_descarte", [])
+    ]
+    return Reglas(categorias=categorias, patrones_descarte=patrones)
+
+
+def invalidar_cache() -> None:
+    """Limpia el cache de reglas. Usalo tras un seed o en tests."""
+    _cargar_reglas.cache_clear()
 
 
 def clasificar_descripcion(descripcion: str | None) -> str | None:
     """Devuelve categoria detectada, '_descartar' si parece ruido, o None.
 
-    Heuristicas:
-    1. Descripciones muy cortas (<15 chars) o que matchean PATRONES_DESCARTAR
-       -> '_descartar' (fragmento de pricing/empaque, no producto real).
-    2. Match contra REGLAS_CATEGORIA en orden.
+    1. Descripciones <15 chars o que matchean patrones_descarte -> '_descartar'.
+    2. Match contra keywords por orden (menor 'orden' gana).
     3. None si nada calza.
     """
     if not descripcion:
@@ -98,18 +109,19 @@ def clasificar_descripcion(descripcion: str | None) -> str | None:
     if not d_strip:
         return None
 
-    # Detectar fragmentos de pricing/empaque
-    for pat in PATRONES_DESCARTAR:
+    reglas = _cargar_reglas()
+
+    for pat in reglas.patrones_descarte:
         if pat.search(d_strip):
             return "_descartar"
     if len(d_strip) < 15:
         return "_descartar"
 
     d = d_strip.lower()
-    for cat, keywords in REGLAS_CATEGORIA:
+    for slug, keywords in reglas.categorias:
         for kw in keywords:
             if kw in d:
-                return cat
+                return slug
     return None
 
 

@@ -138,6 +138,55 @@ class CotizacionSnapshot(Base):
     producto = relationship("Producto", backref="snapshots")
 
 
+class Categoria(Base):
+    """Categoria de producto. Sembrada desde config/categorias.yml.
+
+    El YAML es la fuente de verdad; esta tabla es una proyeccion sembrada
+    via 'python -m app.cli seed-categorias'. El clasificador lee de aqui
+    con cache (lru_cache); si la tabla esta vacia hace fallback al YAML.
+
+    Orden: numero menor = mayor prioridad. Importante para resolver
+    overlaps entre categorias (ej. 'hummingbird feeder' debe caer en
+    'pajaros' antes que en 'alimentadores').
+    """
+    __tablename__ = "categorias"
+    id = Column(Integer, primary_key=True)
+    slug = Column(String(50), nullable=False, unique=True)
+    orden = Column(Integer, nullable=False, default=100)
+
+    keywords = relationship(
+        "CategoriaKeyword",
+        back_populates="categoria",
+        cascade="all, delete-orphan",
+    )
+
+
+class CategoriaKeyword(Base):
+    """Substring case-insensitive que dispara una categoria. NO es regex."""
+    __tablename__ = "categoria_keywords"
+    __table_args__ = (
+        UniqueConstraint("categoria_id", "keyword", name="uq_categoria_keyword"),
+    )
+    id = Column(Integer, primary_key=True)
+    categoria_id = Column(Integer, ForeignKey("categorias.id"), nullable=False)
+    keyword = Column(String(100), nullable=False)
+
+    categoria = relationship("Categoria", back_populates="keywords")
+
+
+class PatronDescarte(Base):
+    """Regex que marca una descripcion como '_descartar' (no es producto real).
+
+    Captura notas de pricing, fragmentos de empaque y etiquetas sueltas
+    que Claude tomo como producto al extraer del PI. Distinto de
+    CategoriaKeyword (substring): aqui SI es regex case-insensitive.
+    """
+    __tablename__ = "patrones_descarte"
+    id = Column(Integer, primary_key=True)
+    patron = Column(String(200), nullable=False, unique=True)
+    nota = Column(Text)
+
+
 class ArancelOverride(Base):
     """Overrides de fraccion arancelaria y tasa por categoria y material.
 

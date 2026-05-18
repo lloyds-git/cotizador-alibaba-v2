@@ -447,6 +447,155 @@ def extraer_con_claude(
     return {"seller": seller, "buyer": buyer, "productos": productos}
 
 
+# ============================================================
+# Fallback de Vision: renderiza paginas del PDF y se las pasa a Claude
+# como imagenes. Ultima opcion cuando Adobe + Claude/JSON dan 0 productos.
+# ============================================================
+
+
+PROMPT_VISION = """Eres un asistente que extrae cotizaciones de productos a partir de imagenes de paginas de PDF.
+
+Te paso N imagenes correspondientes a las paginas (ordenadas) de una cotizacion. Tu tarea:
+
+1. Identifica el SELLER (vendedor/proveedor) si aparece (header, firma, "From:").
+2. Identifica el BUYER (comprador/destinatario) si aparece ("To:", "Attn:").
+3. Por cada PRODUCTO listado en la cotizacion, extrae estos campos:
+   - sku: codigo de modelo/item (string, sin espacios extra). Ej: "XDB-490", "GH-2P068".
+   - desc: descripcion corta y clara del producto (string).
+   - fob: precio FOB unitario en USD (numero. ej 1.23). Si hay varios precios por cantidad,
+     toma el MAS BAJO listado (corresponde a la cantidad mas alta). Sin simbolos.
+   - medidas: dimensiones del producto. Ej: "30x20x10cm" (string).
+   - material: material principal. Ej: "PP plastic", "ABS+PC".
+   - peso_kg: peso por unidad en kg (numero o string si vino con unidades raras).
+   - color: color o variantes disponibles.
+   - moq: cantidad minima de pedido (string, ej "500 pcs").
+   - packing: como se empaca cada unidad. Ej: "1pc/PE bag/colorbox".
+   - carton: dimensiones del carton master. Ej: "55x40x30cm".
+   - cbm: metros cubicos por carton master (numero).
+   - pzas_20ft: piezas por contenedor 20ft (numero).
+   - pzas_40hq: piezas por contenedor 40HQ (numero).
+   - lead_time: tiempo de entrega. Ej: "30 days".
+
+4. Si un campo no aparece, omitelo (no inventes). Numeros como numeros JSON, no strings.
+
+5. Si la cotizacion lista variantes del mismo modelo (ej. mismo SKU con tallas
+   S/M/L o colores), genera UNA FILA POR VARIANTE con SKU diferenciado.
+
+DEVUELVE UN SOLO JSON VALIDO con esta forma exacta (sin texto antes ni despues, sin ```):
+{
+  "seller": "...",
+  "buyer": "...",
+  "productos": [
+    {"sku": "...", "desc": "...", "fob": 1.23, ...},
+    ...
+  ]
+}
+"""
+
+
+def renderizar_paginas_pdf(
+    pdf_path: str,
+    max_pages: int = 10,
+    dpi: int = 150,
+) -> tuple[list[bytes], int]:
+    """Renderiza las primeras `max_pages` paginas del PDF como PNG.
+
+    Devuelve (lista_de_bytes_png, total_paginas_del_pdf).
+    """
+    import io
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(pdf_path)
+    n_total = len(pdf)
+    n = min(n_total, max_pages)
+    scale = dpi / 72.0
+    paginas: list[bytes] = []
+    for i in range(n):
+        page = pdf[i]
+        bitmap = page.render(scale=scale)
+        pil = bitmap.to_pil()
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG", optimize=True)
+        paginas.append(buf.getvalue())
+    pdf.close()
+    return paginas, n_total
+
+
+def extraer_con_vision(
+    pdf_path: str,
+    modelo: str = MODELO_DEFAULT,
+    max_pages: int = 10,
+    dpi: int = 150,
+    max_tokens_salida: int = 16000,
+) -> dict:
+    """Renderiza las paginas del PDF a PNG y pide a Claude extraer productos.
+
+    Ultima opcion cuando Adobe Extract no detecta tablas y el flow JSON-based
+    no encuentra productos. Mismo shape de salida que extraer_con_claude.
+
+    Limitacion: no asigna fotos a los productos (no recortamos regiones de las
+    paginas). El usuario puede subir foto por producto despues con el endpoint
+    POST /api/productos/{id}/foto.
+    """
+    load_dotenv()
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError("Falta ANTHROPIC_API_KEY en .env")
+
+    paginas_bytes, n_total = renderizar_paginas_pdf(pdf_path, max_pages=max_pages, dpi=dpi)
+    if not paginas_bytes:
+        return {"seller": "", "buyer": "", "productos": []}
+    print(f"  Paginas renderizadas: {len(paginas_bytes)}/{n_total} (dpi={dpi})")
+
+    content: list[dict] = [{"type": "text", "text": PROMPT_VISION}]
+    for png_bytes in paginas_bytes:
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.standard_b64encode(png_bytes).decode("utf-8"),
+            },
+        })
+
+    client = anthropic.Anthropic()
+    with client.messages.stream(
+        model=modelo,
+        max_tokens=max_tokens_salida,
+        messages=[{"role": "user", "content": content}],
+    ) as stream:
+        resp = stream.get_final_message()
+
+    print(f"  Tokens Vision: in={resp.usage.input_tokens} out={resp.usage.output_tokens}")
+    if "haiku" in modelo.lower():
+        costo = (resp.usage.input_tokens / 1_000_000) * 1.0 + (resp.usage.output_tokens / 1_000_000) * 5.0
+        print(f"  Costo estimado Vision: ${costo:.4f} USD")
+
+    texto = resp.content[0].text.strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", texto, re.DOTALL)
+    if m:
+        texto = m.group(1).strip()
+
+    try:
+        parsed = json.loads(texto)
+    except json.JSONDecodeError as e:
+        debug_path = os.path.join(os.path.dirname(pdf_path), "_vision_response_debug.txt")
+        Path(debug_path).write_text(texto, encoding="utf-8")
+        raise RuntimeError(
+            f"Claude Vision devolvio JSON invalido. Guardado en {debug_path}. Error: {e}"
+        )
+
+    productos = parsed.get("productos", []) or []
+    seller = (parsed.get("seller") or "").strip()
+    buyer = (parsed.get("buyer") or "").strip()
+    print(f"  Productos extraidos por Vision: {len(productos)}")
+    if seller:
+        print(f"  Seller detectado (Vision): {seller}")
+    if buyer:
+        print(f"  Buyer detectado (Vision): {buyer}")
+
+    return {"seller": seller, "buyer": buyer, "productos": productos}
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         sys.exit("Uso: python extraer_con_claude.py <carpeta_adobe_extract>")

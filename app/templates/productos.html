@@ -102,6 +102,33 @@
         Desmarcar visibles
       </button>
 
+      <button type="button" @click="borrarMarcados()"
+              :disabled="!totalMarcados"
+              class="bg-red-100 hover:bg-red-200 text-red-800 px-3 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Borra TODOS los productos marcados (con sus snapshots, costos y fotos). Irreversible.">
+        🗑 Borrar marcados
+        <span class="ml-1 text-[10px]" x-show="totalMarcados !== null"
+              x-text="'(' + (totalMarcados || 0) + ')'"></span>
+      </button>
+      <button type="button" @click="borrarProveedor()"
+              :disabled="!proveedorFiltro"
+              class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="proveedorFiltro ? 'Borra TODOS los productos del proveedor seleccionado' : 'Selecciona un proveedor para borrarlo'">
+        🗑 Borrar proveedor
+      </button>
+
+      <button type="button" @click="abrirUploadPdf()"
+              class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1 rounded inline-flex items-center gap-1"
+              title="Subir un PDF de cotizacion para extraer e ingestar productos automaticamente">
+        📥 Importar PDF
+      </button>
+
+      <button type="button" @click="abrirValidarCbm()"
+              class="bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-1 rounded inline-flex items-center gap-1"
+              title="Recalcula CBM desde carton_dims y muestra discrepancias (CBM faltante o >50% off)">
+        🧮 Validar CBM
+      </button>
+
       <button type="button" @click="exportarCategoria()" :disabled="!categoriaFiltro || categoriaFiltro === ''"
               class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               :title="categoriaFiltro ? 'Exportar categoria ' + categoriaFiltro : 'Selecciona una categoria para exportar por categoria'">
@@ -184,13 +211,13 @@
             <td class="p-2 text-xs text-gray-600 max-w-[160px] truncate"
                 :title="p.proveedor || ''" x-text="p.proveedor || ''"></td>
             <td class="p-2" @click.stop>
-              <select :value="p.categoria || ''"
-                      @change="manejarCambioCategoria(p, $event.target)"
+              <select @change="manejarCambioCategoria(p, $event.target)"
                       class="border px-1 py-0.5 w-32 text-xs rounded bg-white">
-                <option value="">(sin)</option>
+                <option value="" :selected="!p.categoria">(sin)</option>
                 <template x-for="c in categorias" :key="c.categoria || '__nil__'">
                   <option :value="c.categoria || ''"
                           x-show="c.categoria !== null"
+                          :selected="p.categoria === c.categoria"
                           x-text="c.categoria"></option>
                 </template>
                 <option value="__nueva__">+ Crear nueva...</option>
@@ -291,11 +318,31 @@
         </div>
 
         <!-- Foto -->
-        <template x-if="detalle.fotos && detalle.fotos.length">
-          <div class="mb-3 flex justify-center bg-gray-50 rounded p-2">
-            <img :src="'/' + detalle.fotos[0]" class="max-h-48 object-contain">
+        <div class="mb-3 bg-gray-50 rounded p-2">
+          <template x-if="detalle.fotos && detalle.fotos.length">
+            <div class="flex justify-center">
+              <img :src="'/' + detalle.fotos[0] + '?v=' + (fotoCacheBuster || 0)"
+                   class="max-h-48 object-contain">
+            </div>
+          </template>
+          <template x-if="!detalle.fotos || !detalle.fotos.length">
+            <div class="text-center text-xs text-gray-400 py-6">Sin foto</div>
+          </template>
+          <div class="flex justify-center mt-2 gap-2 items-center">
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+                   x-ref="fotoInput" class="hidden"
+                   @change="subirFoto($event.target.files[0])">
+            <button type="button" @click="$refs.fotoInput.click()"
+                    :disabled="subiendoFoto"
+                    class="bg-blue-100 hover:bg-blue-200 text-blue-800 text-xs px-3 py-1 rounded disabled:opacity-50"
+                    :title="(detalle.fotos && detalle.fotos.length) ? 'Reemplazar foto principal' : 'Subir foto'">
+              <span x-show="!subiendoFoto"
+                    x-text="(detalle.fotos && detalle.fotos.length) ? '🔁 Cambiar foto' : '📷 Subir foto'"></span>
+              <span x-show="subiendoFoto">⏳ Subiendo...</span>
+            </button>
+            <span x-show="fotoError" class="text-[10px] text-red-600" x-text="fotoError"></span>
           </div>
-        </template>
+        </div>
 
         <!-- Descripcion -->
         <div class="mb-3">
@@ -336,16 +383,27 @@
                         'error': '✗'
                       }[saving[detalle.producto_id + ':' + campo.key]] || ''"></span>
               </div>
-              <input
-                :type="campo.tipo"
-                :step="campo.step"
-                :disabled="!editable"
-                :value="(detalle[campo.key] !== null && detalle[campo.key] !== undefined) ? detalle[campo.key] : ''"
-                @change="actualizarCampoProducto(detalle.producto_id, campo.key, $event.target.value, campo.tipo)"
-                placeholder="—"
-                :class="editable ? 'focus:bg-white focus:ring-1 focus:ring-blue-300' : 'cursor-default'"
-                class="w-full bg-transparent font-mono text-xs rounded px-1 py-0.5 outline-none disabled:text-gray-700"
-              >
+              <div class="flex items-center gap-1">
+                <input
+                  :type="campo.tipo"
+                  :step="campo.step"
+                  :disabled="!editable"
+                  :value="(detalle[campo.key] !== null && detalle[campo.key] !== undefined) ? detalle[campo.key] : ''"
+                  @change="actualizarCampoProducto(detalle.producto_id, campo.key, $event.target.value, campo.tipo)"
+                  placeholder="—"
+                  :class="editable ? 'focus:bg-white focus:ring-1 focus:ring-blue-300' : 'cursor-default'"
+                  class="w-full bg-transparent font-mono text-xs rounded px-1 py-0.5 outline-none disabled:text-gray-700"
+                >
+                <!-- Boton de recalcular CBM (solo en el campo cbm, requiere carton_dims) -->
+                <button type="button"
+                        x-show="campo.key === 'cbm'"
+                        @click="recalcularCbmProducto()"
+                        :disabled="!editable || !detalle.carton_dims"
+                        class="text-[10px] bg-cyan-100 hover:bg-cyan-200 text-cyan-800 px-1.5 py-0.5 rounded disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+                        :title="!detalle.carton_dims ? 'Falta carton_dims' : 'Recalcular CBM desde carton_dims (L*W*H / 1.000.000)'">
+                  🧮
+                </button>
+              </div>
             </div>
           </template>
         </div>
@@ -614,6 +672,210 @@
       </div>
     </template>
   </aside>
+
+  <!-- Modal: Importar PDF -->
+  <div x-show="mostrarUploadPdf"
+       x-transition.opacity
+       class="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4"
+       style="display:none"
+       @click.self="if (!subiendoPdf) cerrarUploadPdf()">
+    <div class="bg-white rounded-lg shadow-2xl max-w-lg w-full p-5">
+      <div class="flex justify-between items-start mb-3">
+        <div>
+          <div class="text-lg font-bold">📥 Importar cotizacion (PDF)</div>
+          <div class="text-xs text-gray-500">Sube un PDF; lo procesamos con Adobe + Claude e ingestamos a la BD.</div>
+        </div>
+        <button type="button" @click="cerrarUploadPdf()"
+                :disabled="subiendoPdf"
+                class="text-gray-400 hover:text-gray-700 text-2xl leading-none disabled:opacity-30">&times;</button>
+      </div>
+
+      <!-- Selector de archivo (oculto durante el procesado) -->
+      <div x-show="!subiendoPdf">
+        <input type="file" accept="application/pdf"
+               x-ref="pdfInput"
+               @change="uploadPdfFile = $event.target.files[0]; uploadPdfResultado = null"
+               class="block w-full text-sm border rounded p-2 mb-2">
+        <div class="text-xs text-gray-500 mb-3" x-show="uploadPdfFile">
+          Archivo: <span class="font-mono" x-text="uploadPdfFile && uploadPdfFile.name"></span>
+          <span x-text="uploadPdfFile ? '(' + (uploadPdfFile.size / 1024 / 1024).toFixed(1) + ' MB)' : ''"></span>
+        </div>
+
+        <!-- Checkbox forzar: solo aparece despues de un rechazo por gate -->
+        <label x-show="uploadPdfResultado && uploadPdfResultado.tipo === 'gate'"
+               class="flex items-start gap-2 text-xs bg-amber-50 border border-amber-200 rounded p-2 mb-3">
+          <input type="checkbox" x-model="uploadPdfForzar" class="mt-0.5">
+          <span>
+            <span class="font-semibold text-amber-800">Forzar ingesta</span>
+            (ignora el gate de calidad. Equivale a <code>--force</code> del CLI.)
+          </span>
+        </label>
+
+        <!-- Resultado -->
+        <template x-if="uploadPdfResultado && uploadPdfResultado.tipo === 'ok'">
+          <div class="bg-green-50 border border-green-200 text-green-800 text-sm rounded p-3 mb-3"
+               x-text="uploadPdfResultado.mensaje"></div>
+        </template>
+        <template x-if="uploadPdfResultado && uploadPdfResultado.tipo === 'gate'">
+          <div class="bg-red-50 border border-red-200 text-red-800 text-sm rounded p-3 mb-3">
+            <div class="font-semibold">Gate de calidad bloqueo la ingesta</div>
+            <div class="text-xs mt-1" x-text="uploadPdfResultado.mensaje"></div>
+            <details x-show="uploadPdfResultado.log" class="text-[10px] mt-2">
+              <summary class="cursor-pointer text-red-600 hover:underline">Ver log tecnico</summary>
+              <pre class="bg-white border mt-1 p-2 rounded font-mono whitespace-pre-wrap"
+                   x-text="uploadPdfResultado.log"></pre>
+            </details>
+          </div>
+        </template>
+        <template x-if="uploadPdfResultado && uploadPdfResultado.tipo === 'error'">
+          <div class="bg-red-50 border border-red-200 text-red-800 text-sm rounded p-3 mb-3">
+            <div class="whitespace-pre-wrap" x-text="uploadPdfResultado.mensaje"></div>
+            <details x-show="uploadPdfResultado.log" class="text-[10px] mt-2">
+              <summary class="cursor-pointer text-red-600 hover:underline">Ver log tecnico</summary>
+              <pre class="bg-white border mt-1 p-2 rounded font-mono whitespace-pre-wrap"
+                   x-text="uploadPdfResultado.log"></pre>
+            </details>
+          </div>
+        </template>
+      </div>
+
+      <!-- Spinner durante procesado -->
+      <div x-show="subiendoPdf" class="text-center py-8">
+        <div class="text-4xl animate-pulse">⏳</div>
+        <div class="text-sm font-semibold mt-3">Procesando PDF...</div>
+        <div class="text-xs text-gray-500 mt-1">Adobe Extract + Claude. Puede tardar 10-60 segundos.</div>
+      </div>
+
+      <!-- Botones -->
+      <div class="flex justify-end gap-2 mt-3" x-show="!subiendoPdf">
+        <button type="button" @click="cerrarUploadPdf()"
+                class="bg-gray-100 hover:bg-gray-200 text-sm px-4 py-2 rounded">
+          Cerrar
+        </button>
+        <button type="button" @click="subirPdf()"
+                :disabled="!uploadPdfFile"
+                class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-4 py-2 rounded disabled:opacity-40 disabled:cursor-not-allowed">
+          <span x-show="!uploadPdfResultado || uploadPdfResultado.tipo !== 'gate'">Subir y procesar</span>
+          <span x-show="uploadPdfResultado && uploadPdfResultado.tipo === 'gate'">Reintentar</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Validar CBM -->
+  <div x-show="mostrarValidarCbm"
+       x-transition.opacity
+       class="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4"
+       style="display:none"
+       @click.self="cerrarValidarCbm()">
+    <div class="bg-white rounded-lg shadow-2xl max-w-4xl w-full p-5 max-h-[90vh] flex flex-col">
+      <div class="flex justify-between items-start mb-3">
+        <div>
+          <div class="text-lg font-bold">🧮 Validar CBM</div>
+          <div class="text-xs text-gray-500">
+            CBM calculado desde <code>carton_dims</code> (L*W*H / 1.000.000).
+            Lista solo productos con CBM faltante o &gt;50% off respecto al carton.
+          </div>
+        </div>
+        <button type="button" @click="cerrarValidarCbm()"
+                class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
+      </div>
+
+      <!-- Cargando -->
+      <div x-show="cbmCargando" class="text-center py-8">
+        <div class="text-4xl animate-pulse">⏳</div>
+        <div class="text-sm font-semibold mt-3">Buscando discrepancias...</div>
+      </div>
+
+      <!-- Resultado: aplicado -->
+      <template x-if="cbmResultadoAplicado">
+        <div class="bg-green-50 border border-green-200 text-green-800 text-sm rounded p-3 mb-3">
+          Aplicados: <strong x-text="cbmResultadoAplicado.aplicados.length"></strong> producto(s).
+          <span x-show="cbmResultadoAplicado.sin_cambio && cbmResultadoAplicado.sin_cambio.length">
+            Sin cambio: <span x-text="cbmResultadoAplicado.sin_cambio.length"></span>.
+          </span>
+        </div>
+      </template>
+
+      <!-- Lista -->
+      <div x-show="!cbmCargando && cbmSugerencias !== null" class="overflow-auto flex-1">
+        <template x-if="cbmSugerencias.length === 0">
+          <div class="text-center text-sm text-gray-500 py-8">
+            ✓ No hay discrepancias. Todos los productos con <code>carton_dims</code> parseable
+            tienen CBM consistente.
+          </div>
+        </template>
+        <template x-if="cbmSugerencias.length > 0">
+          <div>
+            <div class="flex items-center justify-between text-xs mb-2">
+              <div class="flex gap-2">
+                <button type="button" @click="cbmSeleccionarTodos(true)"
+                        class="text-blue-600 hover:underline">Seleccionar todos</button>
+                <span class="text-gray-300">|</span>
+                <button type="button" @click="cbmSeleccionarTodos(false)"
+                        class="text-blue-600 hover:underline">Ninguno</button>
+              </div>
+              <div class="text-gray-500">
+                <span x-text="cbmSeleccionados().length"></span> /
+                <span x-text="cbmSugerencias.length"></span> seleccionados
+              </div>
+            </div>
+            <table class="w-full text-xs">
+              <thead class="bg-gray-100 sticky top-0">
+                <tr>
+                  <th class="p-2 text-left w-8"></th>
+                  <th class="p-2 text-left">SKU</th>
+                  <th class="p-2 text-left">Descripcion</th>
+                  <th class="p-2 text-left">Carton</th>
+                  <th class="p-2 text-right">CBM actual</th>
+                  <th class="p-2 text-right">CBM calc</th>
+                  <th class="p-2 text-center">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="s in cbmSugerencias" :key="s.producto_id">
+                  <tr class="border-t hover:bg-blue-50">
+                    <td class="p-2">
+                      <input type="checkbox" x-model="s._seleccionado">
+                    </td>
+                    <td class="p-2 font-mono" x-text="s.sku"></td>
+                    <td class="p-2 max-w-[200px] truncate" :title="s.descripcion"
+                        x-text="s.descripcion"></td>
+                    <td class="p-2 font-mono text-gray-600" x-text="s.carton_dims"></td>
+                    <td class="p-2 text-right font-mono"
+                        x-text="s.cbm_actual !== null && s.cbm_actual !== undefined ? s.cbm_actual.toFixed(4) : '—'"></td>
+                    <td class="p-2 text-right font-mono text-green-700"
+                        x-text="s.cbm_calculado.toFixed(4)"></td>
+                    <td class="p-2 text-center">
+                      <span x-show="s.estado === 'falta'"
+                            class="bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded text-[10px]">FALTA</span>
+                      <span x-show="s.estado === 'discrepancia'"
+                            class="bg-red-100 text-red-800 px-2 py-0.5 rounded text-[10px]">
+                        &gt;50% off
+                      </span>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </div>
+
+      <!-- Botones -->
+      <div class="flex justify-end gap-2 mt-3 border-t pt-3">
+        <button type="button" @click="cerrarValidarCbm()"
+                class="bg-gray-100 hover:bg-gray-200 text-sm px-4 py-2 rounded">
+          Cerrar
+        </button>
+        <button type="button" @click="cbmAplicarSeleccionados()"
+                :disabled="cbmCargando || !cbmSugerencias || cbmSeleccionados().length === 0"
+                class="bg-cyan-600 hover:bg-cyan-700 text-white text-sm px-4 py-2 rounded disabled:opacity-40 disabled:cursor-not-allowed">
+          Aplicar (<span x-text="cbmSeleccionados().length"></span>)
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -653,6 +915,21 @@ function productosApp() {
     editable: false,
     // Estado de guardado por (producto_id + ':' + campo) -> 'saving' | 'ok' | 'error'
     saving: {},
+    // Subida de foto
+    subiendoFoto: false,
+    fotoError: '',
+    fotoCacheBuster: 0,
+    // Importar PDF
+    mostrarUploadPdf: false,
+    subiendoPdf: false,
+    uploadPdfFile: null,
+    uploadPdfForzar: false,
+    uploadPdfResultado: null,
+    // Validar CBM
+    mostrarValidarCbm: false,
+    cbmCargando: false,
+    cbmSugerencias: null,
+    cbmResultadoAplicado: null,
     // Persistir preferencia de "editable" en el navegador
     cargarEditable() {
       try { this.editable = localStorage.getItem('editable') === '1'; } catch (_) {}
@@ -831,6 +1108,74 @@ function productosApp() {
       });
       this.productos.forEach(p => p.marcado_cotizar = marcado);
       await this.cargarCategorias();
+    },
+
+    // Borra TODOS los productos marcados (no solo los visibles). Pide los
+    // ids al backend para asegurar consistencia con lo que dice el contador.
+    async borrarMarcados() {
+      if (!this.totalMarcados) return;
+      const n = this.totalMarcados;
+      if (!confirm(
+          `Borrar ${n} producto(s) marcado(s)?\n\n` +
+          `Esto elimina tambien sus snapshots, costos adicionales y fotos.\n` +
+          `Esta accion NO se puede deshacer.`
+        )) return;
+      // Recolectar ids: si en la vista actual estan todos los marcados los
+      // usamos directo; si no, los pedimos al backend para no perder ninguno.
+      let ids = this.productos.filter(p => p.marcado_cotizar).map(p => p.id);
+      if (ids.length !== n) {
+        const r = await fetch('/api/productos?marcados=true&limit=1000');
+        const j = await r.json();
+        ids = j.items.map(p => p.id);
+      }
+      if (!ids.length) return;
+      const r = await fetch('/api/productos/borrar-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      if (!r.ok) {
+        alert('Error: ' + r.status);
+        return;
+      }
+      const j = await r.json();
+      alert(`${j.borrados} producto(s) borrado(s).`);
+      if (this.detalle && ids.includes(this.detalle.producto_id)) this.detalle = null;
+      await this.cargarCategorias();
+      await this.cargarProveedores();
+      await this.cargar();
+    },
+
+    // Borra TODOS los productos del proveedor actualmente seleccionado en el
+    // filtro. Requiere doble confirmacion (texto del nombre).
+    async borrarProveedor() {
+      if (!this.proveedorFiltro) return;
+      const pv = this.proveedores.find(x => String(x.id) === String(this.proveedorFiltro));
+      if (!pv) return;
+      if (!confirm(
+          `Borrar TODOS los productos del proveedor "${pv.nombre}" (${pv.total})?\n\n` +
+          `Esto elimina tambien sus snapshots, costos adicionales y fotos.\n` +
+          `Esta accion NO se puede deshacer.`
+        )) return;
+      const confirmacion = prompt(
+        `Para confirmar, escribe el nombre del proveedor exacto:\n"${pv.nombre}"`
+      );
+      if (!confirmacion || confirmacion.trim() !== pv.nombre) {
+        alert('Cancelado: el nombre no coincide.');
+        return;
+      }
+      const r = await fetch(`/api/proveedores/${pv.id}/productos`, { method: 'DELETE' });
+      if (!r.ok) {
+        alert('Error: ' + r.status);
+        return;
+      }
+      const j = await r.json();
+      alert(`${j.borrados} producto(s) borrado(s) del proveedor "${j.proveedor}".`);
+      this.proveedorFiltro = '';
+      if (this.detalle) this.detalle = null;
+      await this.cargarCategorias();
+      await this.cargarProveedores();
+      await this.cargar();
     },
 
     async abrirDetalle(p, event) {
@@ -1061,6 +1406,208 @@ function productosApp() {
       const snap = await r.json();
       alert(`Cotizacion guardada: margen real ${snap.margen_real_pct.toFixed(1)}% retail $${snap.retail_final_mxn.toFixed(2)}`);
       if (this.mostrarHistorial) await this.cargarSnapshots();
+    },
+
+    abrirUploadPdf() {
+      this.mostrarUploadPdf = true;
+      this.uploadPdfFile = null;
+      this.uploadPdfForzar = false;
+      this.uploadPdfResultado = null;
+    },
+
+    cerrarUploadPdf() {
+      if (this.subiendoPdf) return;
+      this.mostrarUploadPdf = false;
+    },
+
+    async subirPdf() {
+      if (!this.uploadPdfFile) return;
+      const MAX = 50 * 1024 * 1024;
+      if (this.uploadPdfFile.size > MAX) {
+        this.uploadPdfResultado = { tipo: 'error', mensaje: 'Archivo > 50 MB' };
+        return;
+      }
+      const fd = new FormData();
+      fd.append('file', this.uploadPdfFile);
+      fd.append('forzar', this.uploadPdfForzar ? 'true' : 'false');
+      this.subiendoPdf = true;
+      try {
+        const r = await fetch('/api/ingest/pdf', { method: 'POST', body: fd });
+        let body = null;
+        try { body = await r.json(); } catch (_) {}
+        if (r.status === 200 && body && body.ok) {
+          const veredicto = body.veredicto || 'OK';
+          const forzadoNota = body.forzado ? ' [forzado]' : '';
+          this.uploadPdfResultado = {
+            tipo: 'ok',
+            mensaje: `Proveedor "${body.proveedor}": +${body.productos_nuevos} productos nuevos `
+                   + `(${body.productos_totales_proveedor} totales). Veredicto: ${veredicto}${forzadoNota}.`,
+          };
+          // Refrescar grilla y filtros con los datos nuevos
+          await this.cargarCategorias();
+          await this.cargarProveedores();
+          await this.cargar();
+        } else if (r.status === 422 && body && body.puede_forzar) {
+          this.uploadPdfResultado = {
+            tipo: 'gate',
+            mensaje: body.motivo || 'Calidad de extraccion baja',
+            log: body.log || '',
+          };
+        } else {
+          // Otros 4xx/5xx: prefiere motivo > detail > mensaje generico.
+          // Si vino veredicto (ej. VACIO), lo incluye para contexto.
+          const partes = [];
+          if (body && body.veredicto) partes.push('Veredicto: ' + body.veredicto);
+          if (body && body.motivo) partes.push(body.motivo);
+          else if (body && body.detail) partes.push(body.detail);
+          else partes.push('Error HTTP ' + r.status);
+          this.uploadPdfResultado = {
+            tipo: 'error',
+            mensaje: partes.join(' — '),
+            log: (body && body.log) || '',
+          };
+        }
+      } catch (e) {
+        this.uploadPdfResultado = { tipo: 'error', mensaje: 'Error de red: ' + e.message };
+      } finally {
+        this.subiendoPdf = false;
+      }
+    },
+
+    // --- Validar CBM ---
+    async abrirValidarCbm() {
+      this.mostrarValidarCbm = true;
+      this.cbmResultadoAplicado = null;
+      this.cbmSugerencias = null;
+      this.cbmCargando = true;
+      try {
+        const r = await fetch('/api/cbm/sugerencias');
+        const j = await r.json();
+        // Anotamos un _seleccionado en cada item para el checkbox del modal
+        this.cbmSugerencias = (j.items || []).map(it => ({ ...it, _seleccionado: true }));
+      } catch (e) {
+        this.cbmSugerencias = [];
+        alert('Error cargando sugerencias: ' + e.message);
+      } finally {
+        this.cbmCargando = false;
+      }
+    },
+
+    cerrarValidarCbm() {
+      this.mostrarValidarCbm = false;
+    },
+
+    cbmSeleccionarTodos(v) {
+      if (!this.cbmSugerencias) return;
+      this.cbmSugerencias.forEach(s => { s._seleccionado = v; });
+    },
+
+    cbmSeleccionados() {
+      return (this.cbmSugerencias || []).filter(s => s._seleccionado);
+    },
+
+    async cbmAplicarSeleccionados() {
+      const sel = this.cbmSeleccionados();
+      if (sel.length === 0) return;
+      this.cbmCargando = true;
+      try {
+        const r = await fetch('/api/cbm/aplicar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: sel.map(s => s.producto_id) }),
+        });
+        const j = await r.json();
+        this.cbmResultadoAplicado = j;
+        // Refrescamos la grilla y, si hay detalle abierto y se aplico en el
+        // producto actual, refrescamos su CBM directo del payload.
+        await this.cargar();
+        if (this.detalle) {
+          const aplicado = (j.aplicados || []).find(a => a.producto_id === this.detalle.producto_id);
+          if (aplicado) {
+            this.detalle.cbm = aplicado.cbm_nuevo;
+          }
+        }
+        // Quitamos los aplicados de la lista para que la UI quede consistente
+        const aplicadosIds = new Set((j.aplicados || []).map(a => a.producto_id));
+        this.cbmSugerencias = this.cbmSugerencias.filter(s => !aplicadosIds.has(s.producto_id));
+      } catch (e) {
+        alert('Error aplicando: ' + e.message);
+      } finally {
+        this.cbmCargando = false;
+      }
+    },
+
+    // Recalcula y aplica CBM para el producto del panel de detalle, usando
+    // el mismo endpoint que el modal bulk pero con un solo id.
+    async recalcularCbmProducto() {
+      if (!this.detalle) return;
+      if (!this.editable) return;
+      const pid = this.detalle.producto_id;
+      const key = pid + ':cbm';
+      this.saving[key] = 'saving';
+      try {
+        const r = await fetch('/api/cbm/aplicar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: [pid] }),
+        });
+        const j = await r.json();
+        const aplicado = (j.aplicados || []).find(a => a.producto_id === pid);
+        if (aplicado) {
+          this.detalle.cbm = aplicado.cbm_nuevo;
+          this.saving[key] = 'ok';
+          await this.cargar();  // refresca la columna CBM de la tabla
+        } else {
+          this.saving[key] = 'error';
+          const motivo = (j.sin_cambio && j.sin_cambio[0] && j.sin_cambio[0].motivo)
+            || 'no se pudo recalcular';
+          alert('No aplicado: ' + motivo);
+        }
+      } catch (e) {
+        this.saving[key] = 'error';
+        alert('Error: ' + e.message);
+      }
+      setTimeout(() => { delete this.saving[key]; }, 2000);
+    },
+
+    async subirFoto(file) {
+      this.fotoError = '';
+      if (!file) return;
+      if (!this.detalle) return;
+      const MAX = 10 * 1024 * 1024;
+      if (file.size > MAX) {
+        this.fotoError = 'Archivo > 10MB';
+        return;
+      }
+      const fd = new FormData();
+      fd.append('file', file);
+      this.subiendoFoto = true;
+      try {
+        const r = await fetch(`/api/productos/${this.detalle.producto_id}/foto`, {
+          method: 'POST',
+          body: fd,
+        });
+        if (!r.ok) {
+          let msg = 'Error ' + r.status;
+          try { msg = (await r.json()).detail || msg; } catch (_) {}
+          this.fotoError = msg;
+          return;
+        }
+        const j = await r.json();
+        // Bust cache para que el <img> recargue (el src puede ser el mismo path).
+        this.fotoCacheBuster = Date.now();
+        // Actualizar el detalle y la fila en la grilla
+        this.detalle.fotos = [j.ruta_relativa];
+        const fila = this.productos.find(x => x.id === this.detalle.producto_id);
+        if (fila) fila.fotos = [j.ruta_relativa];
+      } catch (e) {
+        this.fotoError = 'Error de red';
+        console.error(e);
+      } finally {
+        this.subiendoFoto = false;
+        // Reset del input para permitir re-subir el mismo archivo
+        if (this.$refs.fotoInput) this.$refs.fotoInput.value = '';
+      }
     },
 
     async borrarSnapshot(s) {

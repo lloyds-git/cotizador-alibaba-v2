@@ -524,13 +524,29 @@ def construir_xlsx_desde_claude(
         ws.cell(row=1, column=c).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.row_dimensions[1].height = 30
 
+    # Helper tolerante a tipos: None -> "", str -> str.strip(),
+    # numero (int/float) -> numero. Necesario porque el flow JSON-based de
+    # Claude devuelve strings, pero Claude Vision devuelve numeros JSON.
+    def _val(v):
+        if v is None:
+            return ""
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
     fila_excel = 2
     contador = 0
     for p in productos:
-        sku = (p.get("sku") or "").strip()
-        desc = (p.get("desc") or "").strip()
+        sku = _val(p.get("sku")) or ""
+        if not isinstance(sku, str):
+            sku = str(sku)
+        desc = _val(p.get("desc")) or ""
+        if not isinstance(desc, str):
+            desc = str(desc)
         fob = p.get("fob")
-        foto_rel = (p.get("foto") or "").strip()
+        foto_rel = _val(p.get("foto")) or ""
+        if not isinstance(foto_rel, str):
+            foto_rel = str(foto_rel)
 
         if not (sku or desc or fob is not None or foto_rel):
             continue
@@ -538,17 +554,17 @@ def construir_xlsx_desde_claude(
         ws.row_dimensions[fila_excel].height = 90
         ws.cell(row=fila_excel, column=2, value=sku)
         ws.cell(row=fila_excel, column=3, value=desc)
-        ws.cell(row=fila_excel, column=4, value=(p.get("medidas") or "").strip())
-        ws.cell(row=fila_excel, column=5, value=(p.get("material") or "").strip())
-        ws.cell(row=fila_excel, column=6, value=(p.get("peso_kg") or "").strip())
-        ws.cell(row=fila_excel, column=7, value=(p.get("color") or "").strip())
-        ws.cell(row=fila_excel, column=8, value=(p.get("moq") or "").strip())
-        ws.cell(row=fila_excel, column=9, value=(p.get("packing") or "").strip())
-        ws.cell(row=fila_excel, column=10, value=(p.get("carton") or "").strip())
-        ws.cell(row=fila_excel, column=11, value=(p.get("cbm") or "").strip())
-        ws.cell(row=fila_excel, column=12, value=(p.get("pzas_20ft") or "").strip())
-        ws.cell(row=fila_excel, column=13, value=(p.get("pzas_40hq") or "").strip())
-        ws.cell(row=fila_excel, column=14, value=(p.get("lead_time") or "").strip())
+        ws.cell(row=fila_excel, column=4, value=_val(p.get("medidas")))
+        ws.cell(row=fila_excel, column=5, value=_val(p.get("material")))
+        ws.cell(row=fila_excel, column=6, value=_val(p.get("peso_kg")))
+        ws.cell(row=fila_excel, column=7, value=_val(p.get("color")))
+        ws.cell(row=fila_excel, column=8, value=_val(p.get("moq")))
+        ws.cell(row=fila_excel, column=9, value=_val(p.get("packing")))
+        ws.cell(row=fila_excel, column=10, value=_val(p.get("carton")))
+        ws.cell(row=fila_excel, column=11, value=_val(p.get("cbm")))
+        ws.cell(row=fila_excel, column=12, value=_val(p.get("pzas_20ft")))
+        ws.cell(row=fila_excel, column=13, value=_val(p.get("pzas_40hq")))
+        ws.cell(row=fila_excel, column=14, value=_val(p.get("lead_time")))
         if fob is not None:
             try:
                 ws.cell(row=fila_excel, column=15, value=float(fob))
@@ -671,6 +687,30 @@ def main() -> None:
         print(f"3. Generando xlsx intermedio: {xlsx_intermedio}")
         n = construir_xlsx_intermedio(filas, carpeta_extract, xlsx_intermedio)
         print(f"   {n} filas escritas.")
+
+    # Paso 3.5: Vision fallback. Si despues de parser + Claude/JSON aun
+    # quedan 0 productos, intentamos renderizar las paginas como PNG y
+    # pedirle a Claude Vision que las lea directamente. Sirve para PDFs
+    # sin estructura tabular detectable por Adobe Extract.
+    if n == 0 and "--no-vision" not in sys.argv:
+        print()
+        print("3.5. Sin productos extraidos. Probando Claude Vision como ultimo fallback...")
+        try:
+            from extraer_con_claude import extraer_con_vision
+            resultado_v = extraer_con_vision(pdf_path)
+            productos_v = resultado_v.get("productos") or []
+            if productos_v:
+                # Vision puede haber detectado seller/buyer que JSON no vio
+                if resultado_v.get("seller"):
+                    meta["seller"] = resultado_v["seller"]
+                if resultado_v.get("buyer"):
+                    meta["buyer"] = resultado_v["buyer"]
+                n = construir_xlsx_desde_claude(productos_v, carpeta_extract, xlsx_intermedio)
+                print(f"   {n} productos escritos por Vision en {xlsx_intermedio}")
+            else:
+                print("   Vision tampoco extrajo productos. Termina con 0 filas.")
+        except Exception as e:
+            print(f"   Vision fallo: {e}")
 
     # Persistir metadata (seller/buyer) junto al intermedio.
     # El ingest la leera para nombrar al proveedor.
