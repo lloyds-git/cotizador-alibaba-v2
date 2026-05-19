@@ -20,6 +20,7 @@ from app.ingest import (
     cbm_desde_carton_dims,
     cbm_es_discrepante,
     pzas_40hq_desde_cbm_y_caja,
+    pzas_caja_desde_nw_y_peso,
 )
 
 router = APIRouter()
@@ -63,7 +64,10 @@ class ActualizarBody(BaseModel):
     pzas_20ft: int | None = None
     pzas_40hq: int | None = None
     pzas_caja: int | None = None
+    nw_caja_kg: float | None = None
+    gw_caja_kg: float | None = None
     lead_time: str | None = None
+    item_type: str | None = None
 
 
 class MarcarBulkBody(BaseModel):
@@ -702,7 +706,10 @@ def cotizar_14_pasos(
         "pzas_20ft": p.pzas_20ft,
         "pzas_40hq": p.pzas_40hq,
         "pzas_caja": p.pzas_caja,
+        "nw_caja_kg": p.nw_caja_kg,
+        "gw_caja_kg": p.gw_caja_kg,
         "lead_time": p.lead_time,
+        "item_type": p.item_type or "Primary",
         "proveedor": p.proveedor.nombre if p.proveedor else None,
         "fotos": [f.ruta_relativa for f in p.fotos],
         "fraccion_arancelaria": res.fraccion_arancelaria,
@@ -780,8 +787,23 @@ def actualizar(producto_id: int, body: ActualizarBody, db: SesionDep):
         p.pzas_40hq = body.pzas_40hq
     if body.pzas_caja is not None:
         p.pzas_caja = body.pzas_caja
+    if body.nw_caja_kg is not None:
+        p.nw_caja_kg = body.nw_caja_kg
+    if body.gw_caja_kg is not None:
+        p.gw_caja_kg = body.gw_caja_kg
+    # Auto-derive pzas_caja desde N.W./peso_unit cuando esta vacio.
+    # Se dispara si el editor toco nw_caja_kg o peso_kg y pzas_caja sigue
+    # en blanco. No sobrescribe un valor ya capturado: si el operador
+    # quiere forzar el recalculo, debe primero limpiar pzas_caja (=null).
+    if (body.nw_caja_kg is not None or body.peso_kg is not None) \
+       and (not p.pzas_caja or p.pzas_caja <= 0):
+        derivado = pzas_caja_desde_nw_y_peso(p.nw_caja_kg, p.peso_kg)
+        if derivado:
+            p.pzas_caja = derivado
     if body.lead_time is not None:
         p.lead_time = body.lead_time.strip() or None
+    if body.item_type is not None:
+        p.item_type = body.item_type.strip() or "Primary"
     db.commit()
     return {"ok": True}
 
@@ -976,6 +998,7 @@ def _correr_llenar_formato_hd(
 
     Devuelve la ruta del archivo HD producido. Lanza HTTPException en error.
     """
+    import os
     import subprocess
     import sys as _sys
     from app.exportar import (
@@ -1004,7 +1027,8 @@ def _correr_llenar_formato_hd(
         if n == 0:
             raise HTTPException(404, f"No hay productos en categoria {categoria!r}.")
 
-    formato = proyecto / "Formato HD-Mascotas.xlsb"
+    formato_env = os.environ.get("FORMATO_HD_PATH")
+    formato = Path(formato_env) if formato_env else proyecto / "Pet Quote Sheet 2026.xlsb"
     script = proyecto / "llenar_formato_hd.py"
 
     # Replicar la logica de naming de llenar_formato_hd.construir_nombre_salida():
@@ -1025,19 +1049,24 @@ def _correr_llenar_formato_hd(
                     f"No puedo borrar el archivo anterior (esta abierto en Excel?): {p.name}",
                 )
 
-    # El intermedio de exportar.py tiene 17 columnas (Foto=A, SKU=B, Descripcion=C,
-    # ..., FOB USD=O, Retail c/IVA=P, Margen Lloyds=Q).
+    # El intermedio de exportar.py tiene 18 columnas (Foto=A, SKU=B, Descripcion=C,
+    # ..., Margen Lloyds=Q, Proveedor=R).
     # El default de llenar_formato_hd.py asume el layout viejo (22 cols), por
     # eso forzamos el mapeo.
     result = subprocess.run(
         [
             _sys.executable, str(script), str(xlsx_int), str(formato),
             # Mapeo correcto al HD destino:
+            #   col B (SKU)         -> fila 5  (SKU (# or TBD))
             #   col C (Descripcion) -> fila 8  (DESCRIPTION)
-            #   col O (FOB USD)     -> fila 11 (DOMESTIC COST)
+            #   col H (MOQ)         -> fila 12 (MOQ Domestic)
+            #   col M (Pzas 40hq)   -> fila 15 (Pieces per Container)
+            #   col O (Venta HD)    -> fila 11 (DOMESTIC COST)
             #   col P (Retail MXN)  -> fila 16 (SUGGESTED RETAIL)
             #   col Q (Margen)      -> fila 17 (THD MARGIN)
-            "--mapeo", "C=8,O=11,P=16,Q=17", "--yes",
+            # Fila 4 (Vendor Number) se deja en "TBD" via CONSTANTES,
+            # no se mapea el proveedor (R) al HD.
+            "--mapeo", "B=5,C=8,H=12,M=15,O=11,P=16,Q=17", "--yes",
         ],
         capture_output=True, text=True, cwd=str(proyecto),
         stdin=subprocess.DEVNULL,
@@ -1231,6 +1260,67 @@ def exportar_categoria(
         params=params,
     )
     return FileResponse(str(archivo), filename=archivo.name)
+
+
+@router.get("/exportar-pd")
+def exportar_pd(db: SesionDep):
+    """Genera el formato Pet PD (Product Dimension) con productos marcados.
+
+    No usa el motor de cotizacion (no toma TC/margenes/etc): solo datos
+    fisicos del producto. Por eso no recibe params.
+    """
+    from app.exportar import generar_export_pd_desde_marcados
+
+    proyecto = Path(__file__).parent.parent
+    fecha = date.today().strftime("%Y%m%d")
+    salida = proyecto / f"export-pd-marcados-{fecha}.xlsx"
+    if salida.exists():
+        try:
+            salida.unlink()
+        except PermissionError:
+            raise HTTPException(
+                500,
+                f"No puedo borrar el archivo anterior (esta abierto en Excel?): {salida.name}",
+            )
+    n = generar_export_pd_desde_marcados(db, str(salida), str(proyecto / "data"))
+    if n == 0:
+        raise HTTPException(400, "No hay productos marcados.")
+    return FileResponse(
+        str(salida),
+        filename=salida.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@router.get("/exportar-pd/{categoria}")
+def exportar_pd_categoria(categoria: str, db: SesionDep):
+    """Genera Pet PD para una categoria sin tocar marcas.
+
+    Si categoria == '__sin_categoria__', exporta productos sin categoria.
+    """
+    from app.exportar import generar_export_pd_por_categoria
+
+    proyecto = Path(__file__).parent.parent
+    cat_filter = None if categoria == SIN_CATEGORIA else categoria
+    cat_slug = "sin-categoria" if cat_filter is None else categoria
+    fecha = date.today().strftime("%Y%m%d")
+    salida = proyecto / f"export-pd-{cat_slug}-{fecha}.xlsx"
+    if salida.exists():
+        try:
+            salida.unlink()
+        except PermissionError:
+            raise HTTPException(
+                500,
+                f"No puedo borrar el archivo anterior (esta abierto en Excel?): {salida.name}",
+            )
+    n = generar_export_pd_por_categoria(db, str(salida), str(proyecto / "data"), cat_filter)
+    if n == 0:
+        raise HTTPException(404, f"No hay productos en categoria {categoria!r}.")
+    return FileResponse(
+        str(salida),
+        filename=salida.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 # ============================================================

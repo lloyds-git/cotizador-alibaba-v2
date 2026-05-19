@@ -144,6 +144,8 @@ COL_PZAS40 = 13
 COL_LEAD = 14
 COL_FOB = 15
 COL_PZAS_CAJA = 16
+COL_NW_CAJA = 17
+COL_GW_CAJA = 18
 
 
 def _to_float(v) -> float | None:
@@ -200,6 +202,9 @@ def cbm_es_discrepante(cbm_db: float | None, cbm_calc: float | None) -> bool:
 # suelen reportar 67-76; usamos 67 como en el motor y el script de fix.
 CBM_40HQ = 67
 
+# Capacidad util de un 20FT: ~28 m3 (estandar conservador, analogo a 40HQ).
+CBM_20FT = 28
+
 
 def pzas_40hq_desde_cbm_y_caja(cbm: float | None, pzas_caja: int | None) -> int | None:
     """Calcula pzas_40hq = floor(67 / cbm) * pzas_caja.
@@ -212,6 +217,32 @@ def pzas_40hq_desde_cbm_y_caja(cbm: float | None, pzas_caja: int | None) -> int 
     if not pzas_caja or pzas_caja <= 0:
         return None
     return math.floor(CBM_40HQ / cbm) * pzas_caja
+
+
+def pzas_20ft_desde_cbm_y_caja(cbm: float | None, pzas_caja: int | None) -> int | None:
+    """Calcula pzas_20ft = floor(28 / cbm) * pzas_caja. Analogo a 40HQ."""
+    if not cbm or cbm <= 0:
+        return None
+    if not pzas_caja or pzas_caja <= 0:
+        return None
+    return math.floor(CBM_20FT / cbm) * pzas_caja
+
+
+def pzas_caja_desde_nw_y_peso(
+    nw_caja_kg: float | None, peso_kg: float | None
+) -> int | None:
+    """Calcula pzas_caja = floor(nw_caja_kg / peso_kg).
+
+    Usa N.W. (no G.W.) porque el bruto incluye material de empaque; el
+    neto es solo producto. Devuelve None si falta cualquier input o si
+    el resultado seria <=0.
+    """
+    if not nw_caja_kg or nw_caja_kg <= 0:
+        return None
+    if not peso_kg or peso_kg <= 0:
+        return None
+    pzas = math.floor(nw_caja_kg / peso_kg)
+    return pzas if pzas > 0 else None
 
 
 def _extraer_imagenes_xlsx(xlsx_path: str) -> dict[int, bytes]:
@@ -401,6 +432,16 @@ def ingestar_xlsx_intermedio(
         prod.pzas_20ft = _to_int(ws.cell(fila, COL_PZAS20).value)
         prod.pzas_40hq = _to_int(ws.cell(fila, COL_PZAS40).value)
         prod.pzas_caja = _to_int(ws.cell(fila, COL_PZAS_CAJA).value)
+        prod.nw_caja_kg = _to_float(ws.cell(fila, COL_NW_CAJA).value)
+        prod.gw_caja_kg = _to_float(ws.cell(fila, COL_GW_CAJA).value)
+        # Auto-derive de pzas_caja desde N.W./peso_unit cuando el PDF no
+        # trae "Pcs/Ctn" explicito pero si reporta G.W./N.W. y peso unit
+        # (caso comun en cotizaciones Alibaba). N.W. = solo producto, sin
+        # empaque, asi que el cociente da las piezas reales por caja.
+        if (not prod.pzas_caja or prod.pzas_caja <= 0):
+            derivado = pzas_caja_desde_nw_y_peso(prod.nw_caja_kg, prod.peso_kg)
+            if derivado:
+                prod.pzas_caja = derivado
         # Auto-derive de pzas_40hq cuando Claude no lo leyo pero tenemos
         # pzas_caja + cbm: 67 m3 utiles / CBM por caja => cajas, x pzas_caja.
         # Solo si pzas_40hq viene vacio: no sobrescribir lo que Claude leyo.

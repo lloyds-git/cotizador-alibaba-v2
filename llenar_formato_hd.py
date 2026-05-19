@@ -462,9 +462,13 @@ def llenar_formato(
                 # MPT-XXXX (autoincremental empezando en 0001)
                 ws_dest.Cells(9, col_dest).Value = f"MPT-{i + 1:04d}"
 
-                # Datos del origen
+                # Datos del origen. Si el valor es None o cadena vacia, NO se
+                # sobrescribe la celda destino: asi las CONSTANTES (TBD, NA, ...)
+                # actuan como fallback cuando la BD no tiene el dato.
                 for col_origen_idx, fila_dest in mapeo_datos.items():
                     valor = ws_origen.Cells(fila_origen, col_origen_idx).Value
+                    if valor in (None, ""):
+                        continue
                     ws_dest.Cells(fila_dest, col_dest).Value = valor
 
                 # Resolver imagen del origen (extraida desde el ZIP)

@@ -29,6 +29,14 @@ import zipfile
 from collections import defaultdict
 from pathlib import Path
 
+# En Windows el stdout/stderr de un subprocess es cp1252 por default y revienta
+# con caracteres CJK (p. ej. paréntesis full-width （ en headers chinos).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
 import openpyxl
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import get_column_letter
@@ -67,7 +75,7 @@ DEFAULT_SCRIPT_LLENAR = (
     r"C:\Users\salomon.DC0\Documents\Mascotas-9Mayo\llenar_formato_hd.py"
 )
 DEFAULT_FORMATO_HD = (
-    r"C:\Users\salomon.DC0\Documents\Mascotas-9Mayo\Formato HD-Mascotas.xlsb"
+    r"C:\Users\salomon.DC0\Documents\Mascotas-9Mayo\Pet Quote Sheet 2026.xlsb"
 )
 
 
@@ -500,13 +508,14 @@ def construir_xlsx_desde_claude(
     #   A=Foto, B=SKU, C=Descripcion (usado por llenar_formato), D=Medidas,
     #   E=Material, F=Peso(kg), G=Color, H=MOQ, I=Packing, J=Carton size,
     #   K=CBM, L=pzas 20ft, M=pzas 40hq, N=Lead time, O=FOB USD (usado por llenar_formato),
-    #   P=Pzas/caja (al final para no desplazar columnas legacy).
+    #   P=Pzas/caja, Q=N.W. caja (kg), R=G.W. caja (kg).
     headers = {
         1: "Foto", 2: "SKU", 3: "Descripcion", 4: "Medidas",
         5: "Material", 6: "Peso (kg)", 7: "Color", 8: "MOQ",
         9: "Packing", 10: "Carton dims", 11: "CBM",
         12: "Pzas 20ft", 13: "Pzas 40hq", 14: "Lead time",
         15: "FOB USD", 16: "Pzas/caja",
+        17: "N.W. caja (kg)", 18: "G.W. caja (kg)",
     }
     for c, h in headers.items():
         ws.cell(row=1, column=c, value=h)
@@ -514,7 +523,8 @@ def construir_xlsx_desde_claude(
     # Anchos para que se lea bien
     anchos = {"A": 18, "B": 14, "C": 50, "D": 22, "E": 15, "F": 10,
               "G": 25, "H": 14, "I": 22, "J": 22, "K": 10,
-              "L": 10, "M": 10, "N": 14, "O": 12, "P": 10}
+              "L": 10, "M": 10, "N": 14, "O": 12, "P": 10,
+              "Q": 12, "R": 12}
     for col, w in anchos.items():
         ws.column_dimensions[col].width = w
 
@@ -572,6 +582,8 @@ def construir_xlsx_desde_claude(
             except (TypeError, ValueError):
                 pass
         ws.cell(row=fila_excel, column=16, value=_val(p.get("pzas_caja")))
+        ws.cell(row=fila_excel, column=17, value=_val(p.get("nw_caja_kg")))
+        ws.cell(row=fila_excel, column=18, value=_val(p.get("gw_caja_kg")))
 
         # Wrap text en celdas de texto
         for col in (3, 4, 7, 9, 10):

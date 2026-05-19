@@ -39,6 +39,8 @@ class Producto(Base):
     material = Column(String(100))
     medidas = Column(String(200))
     peso_kg = Column(Float)
+    nw_caja_kg = Column(Float)  # N.W. del carton master; permite derivar pzas_caja = floor(nw/peso_kg)
+    gw_caja_kg = Column(Float)  # G.W. del carton master; reservado para flete/peso volumetrico
     color = Column(String(200))
     moq = Column(String(50))
     packing = Column(String(200))
@@ -51,6 +53,9 @@ class Producto(Base):
 
     categoria = Column(String(50))
     subcategoria = Column(String(100))
+
+    # 'Primary' | 'Special Buy' (export Pet PD)
+    item_type = Column(String(20), default="Primary")
 
     marcado_cotizar = Column(Boolean, default=False, nullable=False)
     notas = Column(Text)

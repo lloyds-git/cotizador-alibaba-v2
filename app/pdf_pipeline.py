@@ -7,6 +7,7 @@ endpoint web POST /api/ingest/pdf pueda invocarlo sin duplicar logica
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -73,11 +74,18 @@ def procesar_pdf(
     # nada util. Pasar --claude garantiza que siempre intentamos LLM extract
     # (~$0.005-$0.02 por PDF) -- aceptable para uso interno de cotizaciones y
     # previene el caso de proveedor falso por seller=None.
+    # encoding="utf-8" + PYTHONIOENCODING: el subprocess imprime headers
+    # potencialmente CJK (cotizaciones chinas) y en Windows el pipe default es
+    # cp1252, que revienta con UnicodeEncodeError en el hijo.
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(
         [sys.executable, str(PDF_A_FORMATO_HD), str(pdf_path), "--claude"],
         cwd=str(PROYECTO_ROOT),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
     )
     if result.returncode != 0:
         # Mostramos las ultimas lineas de stderr para diagnostico

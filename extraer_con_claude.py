@@ -232,7 +232,12 @@ REGLAS:
 8. Para "pzas_caja": cuantas piezas hay por carton master. Buscar columnas tipo
    "QTY/CARTON", "PCS/CTN", "pcs per carton" o frases tipo "12 pcs/box". Si
    packing dice "1pc/..." entonces pzas_caja = 1. Si no aparece, dejar "".
-9. Para campos opcionales, deja "" si no aparecen en el PDF.
+9. Para "nw_caja_kg" y "gw_caja_kg": peso neto y bruto del carton master en KG.
+   Aparecen como "G.W./N.W.", "Gross Weight / Net Weight" o similar (frecuente
+   en cotizaciones Alibaba como "20/18 KGS"). Convencion: el PRIMER numero es
+   G.W. (bruto) y el SEGUNDO N.W. (neto). Si solo hay un valor sin etiquetar,
+   asumir G.W. y dejar nw_caja_kg vacio. Si no aparece, dejar "".
+10. Para campos opcionales, deja "" si no aparecen en el PDF.
 
 Devuelve EXCLUSIVAMENTE un JSON valido (sin texto adicional ni markdown):
 {{
@@ -253,6 +258,8 @@ Devuelve EXCLUSIVAMENTE un JSON valido (sin texto adicional ni markdown):
       "carton": "655x210x520mm",
       "cbm": "0.07",
       "pzas_caja": "1",
+      "nw_caja_kg": "5",
+      "gw_caja_kg": "5.5",
       "pzas_20ft": "380",
       "pzas_40hq": "950",
       "lead_time": "25 days"
@@ -479,6 +486,10 @@ Te paso N imagenes correspondientes a las paginas (ordenadas) de una cotizacion.
    - pzas_caja: piezas por carton master (numero). BUSCAR especificamente columnas
      tipo "QTY/CARTON", "PCS/CTN", "pcs per carton", "qty/box", "pcs/carton" o frases
      como "12 pcs/box". Si el packing dice "1pc/..." => pzas_caja = 1. Si no aparece, omitir.
+   - nw_caja_kg: peso neto del carton master en KG (numero). Aparece como "N.W.",
+     "Net Weight" o el SEGUNDO valor en "G.W./N.W.: 20/18 KGS". Si no aparece, omitir.
+   - gw_caja_kg: peso bruto del carton master en KG (numero). Aparece como "G.W.",
+     "Gross Weight" o el PRIMER valor en "G.W./N.W.: 20/18 KGS". Si no aparece, omitir.
    - pzas_20ft: piezas por contenedor 20ft (numero).
    - pzas_40hq: piezas por contenedor 40HQ (numero).
    - lead_time: tiempo de entrega. Ej: "30 days".

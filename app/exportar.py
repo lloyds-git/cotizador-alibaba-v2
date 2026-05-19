@@ -3,30 +3,32 @@ Genera el xlsx intermedio a partir de los productos marcados en la BD.
 Despues, ese xlsx se puede pasar a llenar_formato_hd.py para producir
 el formato HD final.
 
-El intermedio tiene 17 columnas:
+El intermedio tiene 18 columnas:
     A  Foto
-    B  SKU
-    C  Descripcion
+    B  SKU                                                    -> fila 5 del HD ("SKU (# or TBD)")
+    C  Descripcion                                            -> fila 8 del HD ("DESCRIPTION")
     D  Medidas
     E  Material
     F  Peso (kg)
     G  Color
-    H  MOQ
+    H  MOQ                                                    -> fila 12 del HD ("MOQ Domestic")
     I  Packing
     J  Carton dims
     K  CBM
     L  Pzas 20ft
-    M  Pzas 40hq
+    M  Pzas 40hq                                              -> fila 15 del HD ("Pieces per Container")
     N  Lead time
-    O  Venta HD MXN (paso 11 redondeado al entero) -> "DOMESTIC COST" del HD
-    P  Retail c/IVA MXN (paso 13 redondeado al entero) -> "SUGGESTED RETAIL"
-    Q  Margen HD (decimal 0.30 = 30%, formula 1-venta/(retail/1.16)) -> "THD MARGIN"
+    O  Venta HD MXN (paso 11 redondeado al entero)            -> fila 11 del HD ("DOMESTIC COST")
+    P  Retail c/IVA MXN (paso 13 redondeado al entero)        -> fila 16 del HD ("SUGGESTED RETAIL")
+    Q  Margen HD (decimal 0.30 = 30%)                         -> fila 17 del HD ("THD MARGIN")
+    R  Proveedor                                              -> NO se mapea al HD (fila 4 "Vendor Number" queda en "TBD")
 
 Si el producto tiene snapshots guardados, _cotizar_producto usa el mas
 reciente para venta y retail (refleja edicion manual del usuario en el
 panel) en lugar de los pasos 11/13 default del motor.
 """
 
+import os
 from pathlib import Path
 import re
 
@@ -37,6 +39,24 @@ from openpyxl.styles import Font
 from sqlalchemy.orm import Session
 
 from app.modelos import Producto, CostoAdicional, Foto, CotizacionSnapshot
+
+
+# Acepta separadores *, x, X, ×. Captura 3 dimensiones decimales.
+_RE_DIMS_3D = re.compile(r"(\d+\.?\d*)\s*[*xX×]\s*(\d+\.?\d*)\s*[*xX×]\s*(\d+\.?\d*)")
+
+
+def parsear_dimensiones_3d(s: str | None) -> tuple[float, float, float] | None:
+    """Parsea '20×9×7cm', '20*9*7', '20x9x7 cm' -> (20.0, 9.0, 7.0).
+
+    El orden devuelto es el orden tal cual aparece en el string. NO se
+    asume Height/Width/Depth: el campo `Producto.medidas` es texto libre.
+    """
+    if not s:
+        return None
+    m = _RE_DIMS_3D.search(s)
+    if not m:
+        return None
+    return float(m.group(1)), float(m.group(2)), float(m.group(3))
 
 
 def _resolver_foto_path(producto: Producto, base_fotos: str, db: Session) -> Path | None:
@@ -252,7 +272,7 @@ def _construir_xlsx_intermedio(
         "Foto", "SKU", "Descripcion", "Medidas", "Material", "Peso (kg)",
         "Color", "MOQ", "Packing", "Carton dims", "CBM",
         "Pzas 20ft", "Pzas 40hq", "Lead time", "Venta HD MXN",
-        "Retail c/IVA MXN", "Margen HD",
+        "Retail c/IVA MXN", "Margen HD", "Proveedor",
     ]
     for i, h in enumerate(headers, 1):
         c = ws.cell(row=1, column=i, value=h)
@@ -296,6 +316,7 @@ def _construir_xlsx_intermedio(
         # decimales (= 2 decimales de %) para que Excel no muestre 40% en
         # vez de 40.00% cuando el valor es muy cercano a un entero.
         ws.cell(i, 17, value=round(cot["margen_cliente_pct"] / 100, 4))
+        ws.cell(i, 18, value=p.proveedor.nombre if p.proveedor else "")
 
         # Foto: usar foto propia, o fallback al SKU base si la variante no tiene
         foto_path = _resolver_foto_path(p, base_fotos, db)
@@ -347,6 +368,108 @@ def generar_formato_hd_por_categoria(
         q = q.filter(Producto.categoria == categoria)
     productos = q.all()
     return _construir_xlsx_intermedio(productos, xlsx_intermedio, base_fotos, session, params=params)
+
+
+# ============================================================
+# Export Pet PD (Product Dimension): horizontal, 1 fila por producto
+# basado en el template "Pet PD Format.xlsx".
+# ============================================================
+
+
+def _construir_xlsx_pd(
+    productos: list,
+    xlsx_salida: str,
+    base_fotos: str,
+    db: Session,
+) -> int:
+    """Carga el template Pet PD Format.xlsx, limpia la data sample y las
+    imagenes del template, y escribe una fila por producto desde la fila 6.
+
+    Mapeo:
+      A SKU, C foto, D Product Name, E Item Type, F Vendor Name,
+      K/L/M Assembled H/W/D (parseado de p.medidas, orden tal cual del string).
+    B, G, H, I, J quedan vacios por decision del usuario:
+      - B (Pack Picture) y G (Brand): no hay dato en BD.
+      - H/I/J (Package dims): la BD solo tiene carton_dims del master case,
+        no el empaque individual.
+
+    El path del template se toma de FORMATO_PD_PATH (env), con fallback a
+    `<proyecto>/Pet PD Format.xlsx`.
+    """
+    template_env = os.environ.get("FORMATO_PD_PATH")
+    if template_env:
+        template_path = Path(template_env)
+    else:
+        template_path = Path(__file__).parent.parent / "Pet PD Format.xlsx"
+    if not template_path.exists():
+        raise FileNotFoundError(f"No existe template PD: {template_path}")
+
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+
+    # Limpiar data sample (filas 6-13, cols A..M) e imagenes embebidas.
+    # openpyxl: pasar value=None al kwarg de Cell() NO limpia el valor;
+    # hay que asignar a .value explicitamente.
+    for r in range(6, 14):
+        for c in range(1, 14):
+            ws.cell(row=r, column=c).value = None
+    ws._images = []
+
+    for i, p in enumerate(productos, start=6):
+        ws.row_dimensions[i].height = 95
+        ws.cell(i, 1, value=p.sku or "")
+        ws.cell(i, 4, value=p.descripcion or "")
+        ws.cell(i, 5, value=(getattr(p, "item_type", None) or "Primary"))
+        ws.cell(i, 6, value=p.proveedor.nombre if p.proveedor else "")
+        dims = parsear_dimensiones_3d(p.medidas)
+        if dims:
+            ws.cell(i, 11, value=dims[0])
+            ws.cell(i, 12, value=dims[1])
+            ws.cell(i, 13, value=dims[2])
+
+        foto_path = _resolver_foto_path(p, base_fotos, db)
+        if foto_path:
+            try:
+                img = XLImage(str(foto_path))
+                img.width = min(img.width, 120)
+                img.height = min(img.height, 120)
+                img.anchor = f"C{i}"
+                ws.add_image(img)
+            except Exception:
+                pass
+
+    Path(xlsx_salida).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(xlsx_salida)
+    return len(productos)
+
+
+def generar_export_pd_desde_marcados(
+    session: Session,
+    xlsx_salida: str,
+    base_fotos: str,
+) -> int:
+    """Genera xlsx Pet PD con productos marcado_cotizar=True."""
+    productos = (
+        session.query(Producto)
+        .filter(Producto.marcado_cotizar.is_(True))
+        .all()
+    )
+    return _construir_xlsx_pd(productos, xlsx_salida, base_fotos, session)
+
+
+def generar_export_pd_por_categoria(
+    session: Session,
+    xlsx_salida: str,
+    base_fotos: str,
+    categoria: str | None,
+) -> int:
+    """Genera xlsx Pet PD filtrando por categoria (None = sin categoria)."""
+    q = session.query(Producto)
+    if categoria is None:
+        q = q.filter(Producto.categoria.is_(None))
+    else:
+        q = q.filter(Producto.categoria == categoria)
+    return _construir_xlsx_pd(q.all(), xlsx_salida, base_fotos, session)
 
 
 # ============================================================

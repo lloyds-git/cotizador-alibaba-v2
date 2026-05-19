@@ -154,6 +154,18 @@
         <span class="bg-white text-purple-800 text-xs font-bold px-2 py-0.5 rounded-full"
               x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
       </button>
+      <button type="button" @click="exportarPD()"
+              class="bg-blue-700 hover:bg-blue-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
+              title="Genera Pet PD Format (Product Dimension) con productos marcados">
+        Exportar PD
+        <span class="bg-white text-blue-800 text-xs font-bold px-2 py-0.5 rounded-full"
+              x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
+      </button>
+      <button type="button" @click="exportarPDCategoria()" :disabled="!categoriaFiltro || categoriaFiltro === ''"
+              class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="categoriaFiltro ? 'Exportar PD para categoria ' + categoriaFiltro : 'Selecciona una categoria primero'">
+        Exportar PD categoria
+      </button>
     </div>
 
     <div class="mt-2 text-xs text-gray-600 flex items-center gap-3">
@@ -312,6 +324,15 @@
               <a href="/aranceles" class="text-blue-500 hover:underline text-[10px]"
                  title="Editar fracciones estandar y overrides">[editar]</a>
             </div>
+            <div class="text-xs text-gray-500 flex items-center gap-1 mt-1">
+              <span>· Item Type (Pet PD):</span>
+              <select @change="cambiarItemType($event.target.value)"
+                      class="border border-gray-200 rounded px-1 py-0.5 text-xs bg-white"
+                      title="Item Type que va al export Pet PD (col E)">
+                <option value="Primary" :selected="(detalle.item_type || 'Primary') === 'Primary'">Primary</option>
+                <option value="Special Buy" :selected="detalle.item_type === 'Special Buy'">Special Buy</option>
+              </select>
+            </div>
             <template x-if="origen && origen.existe">
               <div class="text-xs mt-1">
                 <a :href="origen.ver_url"
@@ -373,23 +394,46 @@
         <!-- Datos del producto en 2 columnas (editables in-place; PATCH al perder foco) -->
         <div class="grid grid-cols-2 gap-2 text-xs mb-4">
           <template x-for="campo in [
-            {key:'material', label:'Material', tipo:'text'},
-            {key:'medidas', label:'Medidas', tipo:'text'},
-            {key:'peso_kg', label:'Peso (kg)', tipo:'number', step:'0.01'},
-            {key:'color', label:'Color', tipo:'text'},
-            {key:'moq', label:'MOQ', tipo:'text'},
-            {key:'packing', label:'Packing', tipo:'text'},
-            {key:'carton_dims', label:'Carton dims', tipo:'text'},
-            {key:'cbm', label:'CBM / caja', tipo:'number', step:'0.001'},
-            {key:'pzas_caja', label:'Pzas / caja', tipo:'number', step:'1'},
-            {key:'pzas_20ft', label:'Pzas / 20ft', tipo:'number', step:'1'},
-            {key:'pzas_40hq', label:'Pzas / 40HQ', tipo:'number', step:'1'},
-            {key:'lead_time', label:'Lead time', tipo:'text'},
-            {key:'fob_usd', label:'FOB USD', tipo:'number', step:'0.01'}
+            {key:'material', label:'Material', tipo:'text',
+             tooltip:'Material principal del producto (ej. PP, ABS, silicone, stainless steel). Usado por el clasificador de aranceles para resolver overrides por material.'},
+            {key:'medidas', label:'Medidas', tipo:'text',
+             tooltip:'Dimensiones del producto unitario (ej. 53x30x6.8 cm). Informativo: NO se usa para calcular CBM (eso viene de Carton dims).'},
+            {key:'peso_kg', label:'Peso (kg)', tipo:'number', step:'0.01',
+             tooltip:'Peso de UNA pieza en kg. Se usa para derivar Pzas/caja si hay N.W. caja, y para flete proporcional en el motor de cotizacion.'},
+            {key:'color', label:'Color', tipo:'text',
+             tooltip:'Color o variantes disponibles. Informativo. Si hay varios colores con precios distintos, cada variante deberia ser un producto separado.'},
+            {key:'moq', label:'MOQ', tipo:'text',
+             tooltip:'Cantidad minima de pedido (Minimum Order Quantity). Tal como viene del PDF, en texto libre (ej. 2000 pcs, 500 sets).'},
+            {key:'packing', label:'Packing', tipo:'text',
+             tooltip:'Empaque individual del producto (ej. 1pc / opp bag, 1pc / color box). NO confundir con Carton dims (carton master).'},
+            {key:'carton_dims', label:'Carton dims', tipo:'text',
+             tooltip:'Dimensiones del carton master en formato L*W*H cm (ej. 48*38*38 CM). Permite calcular CBM automaticamente con el boton de calculadora.'},
+            {key:'cbm', label:'CBM / caja', tipo:'number', step:'0.001',
+             tooltip:'Volumen del carton master en m3. Si esta vacio o difiere mas de 50% de Carton dims, se puede recalcular como L*W*H/1.000.000. Usado en motor para flete por contenedor.'},
+            {key:'pzas_caja', label:'Pzas / caja', tipo:'number', step:'1',
+             tooltip:'Piezas por carton master. Si esta vacio y hay N.W. caja + Peso unitario, se calcula automaticamente como floor(N.W. / Peso). Editable: un valor capturado manualmente NO se sobrescribe.'},
+            {key:'nw_caja_kg', label:'N.W. caja (kg)', tipo:'number', step:'0.01',
+             tooltip:'Peso neto del carton master (Net Weight). Solo el producto, sin material de empaque. Al capturarlo dispara el calculo automatico de Pzas/caja si esta vacio.'},
+            {key:'gw_caja_kg', label:'G.W. caja (kg)', tipo:'number', step:'0.01',
+             tooltip:'Peso bruto del carton master (Gross Weight). Incluye empaque. Reservado para calculos de flete y peso volumetrico.'},
+            {key:'pzas_20ft', label:'Pzas / 20ft', tipo:'number', step:'1',
+             tooltip:'Piezas por contenedor 20ft. Capacidad util ~28 m3. Formula equivalente: floor(28 / CBM) x Pzas/caja.'},
+            {key:'pzas_40hq', label:'Pzas / 40HQ', tipo:'number', step:'1',
+             tooltip:'Piezas por contenedor 40HQ. Capacidad util ~67 m3. Si esta vacio y hay CBM + Pzas/caja, se puede recalcular con el boton de caja como floor(67 / CBM) x Pzas/caja.'},
+            {key:'lead_time', label:'Lead time', tipo:'text',
+             tooltip:'Tiempo de entrega del proveedor desde confirmacion del pedido (ej. 7-10 days, 30 days). Informativo, en texto libre.'},
+            {key:'fob_usd', label:'FOB USD', tipo:'number', step:'0.01',
+             tooltip:'Precio FOB unitario en USD (puerto China). Punto de partida del motor de cotizacion (14 pasos). Si hay costos adicionales (EXW a FOB, caja color, etc.), se suman aparte y el motor usa el FOB efectivo.'}
           ]" :key="campo.key">
             <div class="bg-gray-50 px-2 py-1 rounded">
               <div class="text-gray-500 uppercase text-[10px] flex justify-between items-center">
-                <span x-text="campo.label"></span>
+                <span class="flex items-center gap-1">
+                  <span x-text="campo.label"></span>
+                  <!-- Tooltip: ayuda contextual sobre como se calcula el campo -->
+                  <span x-show="campo.tooltip"
+                        :title="campo.tooltip"
+                        class="text-blue-500 cursor-help select-none text-[11px] leading-none">ⓘ</span>
+                </span>
                 <!-- Indicador de estado de guardado -->
                 <span class="text-[10px] ml-1"
                       x-show="saving[detalle.producto_id + ':' + campo.key]"
@@ -1062,9 +1106,10 @@ const DEFAULTS_PARAMS = {
 
 // Campos del Producto que entran al motor de cotizacion (14 pasos).
 // Editar cualquiera de estos refresca el panel y re-evalua snapshots.
+// nw_caja_kg esta aqui porque dispara auto-derive de pzas_caja en backend.
 const CAMPOS_MOTOR = [
   'fob_usd', 'cbm', 'pzas_20ft', 'pzas_40hq', 'pzas_caja',
-  'peso_kg', 'categoria', 'subcategoria',
+  'peso_kg', 'nw_caja_kg', 'categoria', 'subcategoria',
 ];
 
 function productosApp() {
@@ -1982,6 +2027,28 @@ function productosApp() {
       }
       window.location.href = '/exportar/' + encodeURIComponent(this.categoriaFiltro)
         + '?' + this.paramsActuales();
+    },
+
+    exportarPD() {
+      window.location.href = '/exportar-pd';
+    },
+
+    exportarPDCategoria() {
+      if (!this.categoriaFiltro) {
+        alert('Selecciona una categoria primero.');
+        return;
+      }
+      window.location.href = '/exportar-pd/' + encodeURIComponent(this.categoriaFiltro);
+    },
+
+    async cambiarItemType(valor) {
+      if (!this.detalle) return;
+      const r = await fetch('/api/productos/' + this.detalle.producto_id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_type: valor }),
+      });
+      if (r.ok) this.detalle.item_type = valor;
     },
 
     formatearValor(v) {

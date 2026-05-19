@@ -12,7 +12,11 @@ setlocal
 
 set "PROYECTO=C:\Users\salomon.DC0\Documents\Mascotas-9Mayo"
 set "SCRIPT=%PROYECTO%\llenar_formato_hd.py"
-set "FORMATO=%PROYECTO%\Formato HD-Mascotas.xlsb"
+if defined FORMATO_HD_PATH (
+    set "FORMATO=%FORMATO_HD_PATH%"
+) else (
+    set "FORMATO=%PROYECTO%\Pet Quote Sheet 2026.xlsb"
+)
 
 if "%~1"=="" (
     echo Uso: llenar-hd ^<archivo_origen.xlsx^> [--mapeo "C=8,O=11,..."]

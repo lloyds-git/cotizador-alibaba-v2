@@ -15,6 +15,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from datetime import date
@@ -22,9 +23,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from dotenv import load_dotenv
+
 from app.db import get_session_factory
 from app.exportar import generar_formato_hd_por_categoria
 from app.modelos import Producto
+
+load_dotenv()
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,12 +66,20 @@ def generar_para_categoria(session, categoria: str | None) -> dict:
     )
 
     script = ROOT / "llenar_formato_hd.py"
-    formato = ROOT / "Formato HD-Mascotas.xlsb"
+    formato_env = os.environ.get("FORMATO_HD_PATH")
+    formato = Path(formato_env) if formato_env else ROOT / "Pet Quote Sheet 2026.xlsb"
     cmd = [
         sys.executable, str(script), str(xlsx_int), str(formato),
-        # Col C (Descripcion) -> fila 8 (DESCRIPTION del HD)
-        # Col O (FOB USD)     -> fila 11 (DOMESTIC COST del HD)
-        "--mapeo", "C=8,O=11", "--yes",
+        # Col B (SKU)         -> fila 5  (SKU (# or TBD))
+        # Col C (Descripcion) -> fila 8  (DESCRIPTION)
+        # Col H (MOQ)         -> fila 12 (MOQ Domestic)
+        # Col M (Pzas 40hq)   -> fila 15 (Pieces per Container)
+        # Col O (Venta HD)    -> fila 11 (DOMESTIC COST)
+        # Col P (Retail MXN)  -> fila 16 (SUGGESTED RETAIL)
+        # Col Q (Margen)      -> fila 17 (THD MARGIN)
+        # Fila 4 (Vendor Number) se deja en "TBD" via CONSTANTES,
+        # no se mapea el proveedor (R) al HD.
+        "--mapeo", "B=5,C=8,H=12,M=15,O=11,P=16,Q=17", "--yes",
     ]
     res = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT), timeout=300)
 
