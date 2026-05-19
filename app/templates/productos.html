@@ -193,19 +193,18 @@
 
   <!-- Tabla -->
   <div :class="detalle ? 'mr-[480px] transition-all' : 'transition-all'">
-    <table class="bg-white w-full text-sm shadow rounded overflow-hidden">
-      <thead class="sticky z-30 bg-gray-100 text-left shadow-sm"
-             :style="`top: ${topBarHeight}px`">
+    <table class="bg-white w-full text-sm shadow rounded">
+      <thead class="bg-gray-100 text-left">
         <tr>
-          <th class="p-2">Foto</th>
-          <th class="p-2">SKU</th>
-          <th class="p-2">Descripcion</th>
-          <th class="p-2">Proveedor</th>
-          <th class="p-2">Categoria</th>
-          <th class="p-2">FOB USD</th>
-          <th class="p-2 text-right">CBM</th>
-          <th class="p-2 text-right">Pzas/40HQ</th>
-          <th class="p-2 text-center">Cotizar</th>
+          <th class="sticky z-30 bg-gray-100 p-2 shadow-sm" :style="`top: ${topBarHeight}px`">Foto</th>
+          <th class="sticky z-30 bg-gray-100 p-2 shadow-sm" :style="`top: ${topBarHeight}px`">SKU</th>
+          <th class="sticky z-30 bg-gray-100 p-2 shadow-sm" :style="`top: ${topBarHeight}px`">Descripcion</th>
+          <th class="sticky z-30 bg-gray-100 p-2 shadow-sm" :style="`top: ${topBarHeight}px`">Proveedor</th>
+          <th class="sticky z-30 bg-gray-100 p-2 shadow-sm" :style="`top: ${topBarHeight}px`">Categoria</th>
+          <th class="sticky z-30 bg-gray-100 p-2 shadow-sm" :style="`top: ${topBarHeight}px`">FOB USD</th>
+          <th class="sticky z-30 bg-gray-100 p-2 shadow-sm text-right" :style="`top: ${topBarHeight}px`">CBM</th>
+          <th class="sticky z-30 bg-gray-100 p-2 shadow-sm text-right" :style="`top: ${topBarHeight}px`">Pzas/40HQ</th>
+          <th class="sticky z-30 bg-gray-100 p-2 shadow-sm text-center" :style="`top: ${topBarHeight}px`">Cotizar</th>
         </tr>
       </thead>
       <tbody>
