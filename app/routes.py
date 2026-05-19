@@ -13,6 +13,7 @@ from app import db as db_module
 from app.modelos import (
     Producto, Proveedor, ArancelOverride, Arancel, CostoAdicional,
     CotizacionSnapshot, Foto, Categoria, CategoriaKeyword, PatronDescarte,
+    UsuarioAutorizado,
 )
 from app.clasificador import clasificar_descripcion, invalidar_cache
 from app.ingest import (
@@ -1986,3 +1987,119 @@ def pagina_categorias(request: Request, db: SesionDep):
         "categorias.html",
         {"productos_sin_categoria": int(sin_categoria or 0)},
     )
+
+
+# ============================================================
+# Usuarios autorizados (whitelist Google OAuth)
+# ============================================================
+
+class UsuarioCreateBody(BaseModel):
+    email: str
+    nombre: str | None = None
+
+
+class UsuarioPatchBody(BaseModel):
+    nombre: str | None = None
+    activo: bool | None = None
+
+
+def _usuario_to_dict(u: UsuarioAutorizado) -> dict:
+    return {
+        "id": u.id,
+        "email": u.email,
+        "nombre": u.nombre,
+        "activo": u.activo,
+        "creado_en": u.creado_en.isoformat() if u.creado_en else None,
+        "ultimo_login": u.ultimo_login.isoformat() if u.ultimo_login else None,
+    }
+
+
+def _email_session(request: Request) -> str | None:
+    """Email del usuario actualmente logueado, si lo hay (None en tests)."""
+    return (request.session.get("user") or {}).get("email")
+
+
+@router.get("/api/usuarios")
+def listar_usuarios(db: SesionDep):
+    items = (
+        db.query(UsuarioAutorizado)
+        .order_by(UsuarioAutorizado.activo.desc(), UsuarioAutorizado.email)
+        .all()
+    )
+    return {"items": [_usuario_to_dict(u) for u in items]}
+
+
+@router.post("/api/usuarios")
+def crear_usuario(body: UsuarioCreateBody, db: SesionDep):
+    email = (body.email or "").strip().lower()
+    if not email or "@" not in email or "." not in email.split("@", 1)[1]:
+        raise HTTPException(400, "Email invalido")
+    if db.query(UsuarioAutorizado).filter(UsuarioAutorizado.email == email).first():
+        raise HTTPException(409, "Ese correo ya esta autorizado")
+    u = UsuarioAutorizado(
+        email=email,
+        nombre=((body.nombre or "").strip() or None),
+        activo=True,
+    )
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    return _usuario_to_dict(u)
+
+
+@router.patch("/api/usuarios/{usuario_id}")
+def editar_usuario(
+    usuario_id: int, body: UsuarioPatchBody, request: Request, db: SesionDep
+):
+    u = db.get(UsuarioAutorizado, usuario_id)
+    if not u:
+        raise HTTPException(404, "Usuario no encontrado")
+
+    if body.nombre is not None:
+        u.nombre = body.nombre.strip() or None
+
+    if body.activo is not None and body.activo != u.activo:
+        actual_email = _email_session(request)
+        # Guardia: no desactivarse a si mismo.
+        if not body.activo and actual_email and actual_email == u.email:
+            raise HTTPException(400, "No puedes desactivarte a ti mismo")
+        # Guardia: no dejar a la app sin ningun usuario activo.
+        if not body.activo:
+            activos = (
+                db.query(UsuarioAutorizado)
+                .filter(UsuarioAutorizado.activo == True)  # noqa: E712
+                .count()
+            )
+            if activos <= 1:
+                raise HTTPException(400, "No puedes desactivar al ultimo usuario activo")
+        u.activo = body.activo
+
+    db.commit()
+    db.refresh(u)
+    return _usuario_to_dict(u)
+
+
+@router.delete("/api/usuarios/{usuario_id}")
+def borrar_usuario(usuario_id: int, request: Request, db: SesionDep):
+    u = db.get(UsuarioAutorizado, usuario_id)
+    if not u:
+        raise HTTPException(404, "Usuario no encontrado")
+    actual_email = _email_session(request)
+    if actual_email and actual_email == u.email:
+        raise HTTPException(400, "No puedes borrarte a ti mismo")
+    if u.activo:
+        activos = (
+            db.query(UsuarioAutorizado)
+            .filter(UsuarioAutorizado.activo == True)  # noqa: E712
+            .count()
+        )
+        if activos <= 1:
+            raise HTTPException(400, "No puedes borrar al ultimo usuario activo")
+    db.delete(u)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/usuarios", response_class=HTMLResponse)
+def pagina_usuarios(request: Request, db: SesionDep):
+    return TEMPLATES.TemplateResponse(request, "usuarios.html", {})

@@ -1,3 +1,11 @@
+import os
+
+# Bypassea AuthMiddleware en todos los tests. Se setea antes de cualquier
+# import que pueda construir la app.
+os.environ.setdefault("AUTH_DISABLED", "1")
+os.environ.setdefault("SESSION_SECRET", "test-secret-not-for-prod")
+os.environ.setdefault("SESSION_INSECURE", "1")  # cookies sin Secure en testclient (HTTP)
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

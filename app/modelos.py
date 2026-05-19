@@ -212,6 +212,23 @@ class ArancelOverride(Base):
     actualizado_en = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class UsuarioAutorizado(Base):
+    """Lista blanca de correos con acceso a la app via Google OAuth2.
+
+    El callback de OAuth (app/auth.py) rechaza el login si el correo no
+    esta aqui o si activo=False. Sin roles: cualquier usuario activo puede
+    gestionar la lista. Guardias en los endpoints impiden que alguien se
+    desactive/borre a si mismo o al ultimo usuario activo.
+    """
+    __tablename__ = "usuarios_autorizados"
+    id = Column(Integer, primary_key=True)
+    email = Column(String(200), nullable=False, unique=True, index=True)
+    nombre = Column(String(200))
+    activo = Column(Boolean, default=True, nullable=False)
+    creado_en = Column(DateTime, default=datetime.utcnow)
+    ultimo_login = Column(DateTime)
+
+
 class Arancel(Base):
     """Fraccion arancelaria estandar por (categoria, subcategoria).
 

@@ -9,15 +9,25 @@
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-900">
+{% set u = request.session.get('user') if request else None %}
 <header class="bg-white shadow px-6 py-4 flex justify-between items-center">
   <h1 class="text-xl font-bold">Productos Mascotas</h1>
-  <nav class="text-sm">
-    <a href="/" class="hover:underline">Productos</a>
-    <a href="/cotizaciones" class="hover:underline ml-4">Cotizaciones</a>
-    <a href="/categorias" class="hover:underline ml-4">Categorias</a>
-    <a href="/aranceles" class="hover:underline ml-4">Aranceles</a>
-    <a href="/exportar" class="hover:underline ml-4">Exportar marcados</a>
-  </nav>
+  <div class="flex items-center gap-6">
+    <nav class="text-sm">
+      <a href="/" class="hover:underline">Productos</a>
+      <a href="/cotizaciones" class="hover:underline ml-4">Cotizaciones</a>
+      <a href="/categorias" class="hover:underline ml-4">Categorias</a>
+      <a href="/aranceles" class="hover:underline ml-4">Aranceles</a>
+      <a href="/usuarios" class="hover:underline ml-4">Usuarios</a>
+      <a href="/exportar" class="hover:underline ml-4">Exportar marcados</a>
+    </nav>
+    {% if u %}
+      <div class="flex items-center gap-3 text-sm border-l pl-4 border-gray-200">
+        <span class="text-gray-700" title="{{ u.email }}">{{ u.nombre or u.email }}</span>
+        <a href="/logout" class="text-red-600 hover:underline text-xs">Salir</a>
+      </div>
+    {% endif %}
+  </div>
 </header>
 <main class="p-6">
   {% block content %}{% endblock %}
