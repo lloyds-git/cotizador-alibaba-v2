@@ -1,27 +1,32 @@
 {% extends "base.html" %}
 {% block content %}
-<div x-data="productosApp()" x-init="init()">
+<div x-data="productosApp()" x-init="init()"
+     @keydown.window.slash="if(!esInputActivo()) { $event.preventDefault(); $refs.searchInput.focus(); }"
+     @keydown.window.home="if(!esInputActivo()) { $event.preventDefault(); scrollTop(); }"
+     @keydown.window.end="if(!esInputActivo()) { $event.preventDefault(); scrollBottom(); }"
+     @keydown.window.escape="manejarEscape()">
 
-  <!-- Barra superior: parametros + busqueda + filtro categoria + exportar -->
-  <div class="mb-4 bg-white p-4 rounded shadow text-sm">
-    <div class="flex gap-4 items-center flex-wrap mb-3">
-      <label>Tipo cambio MXN:
-        <input type="number" step="0.1" x-model.number="tc" class="border px-2 py-1 w-20 ml-1">
+  <!-- Barra superior compacta + sticky: parametros + filtros + acciones siempre visibles -->
+  <div x-ref="topBar"
+       class="sticky top-0 z-40 -mx-6 px-6 py-2 bg-white shadow-md text-xs border-b border-gray-200">
+    <div class="flex gap-3 items-center flex-wrap mb-1">
+      <label>TC MXN:
+        <input type="number" step="0.1" x-model.number="tc" class="border px-1.5 py-0.5 w-16 ml-1">
       </label>
       <label>Margen Lloyds:
-        <input type="number" step="0.05" x-model.number="margenNuestro" class="border px-2 py-1 w-20 ml-1">
+        <input type="number" step="0.05" x-model.number="margenNuestro" class="border px-1.5 py-0.5 w-16 ml-1">
       </label>
       <label>Margen retailer:
-        <input type="number" step="0.05" x-model.number="margenCliente" class="border px-2 py-1 w-20 ml-1">
+        <input type="number" step="0.05" x-model.number="margenCliente" class="border px-1.5 py-0.5 w-16 ml-1">
       </label>
       <label>Flete USD/40HQ:
-        <input type="number" step="100" x-model.number="fleteMaritimo" class="border px-2 py-1 w-24 ml-1">
+        <input type="number" step="100" x-model.number="fleteMaritimo" class="border px-1.5 py-0.5 w-20 ml-1">
       </label>
       <label>Flete local MXN:
-        <input type="number" step="1000" x-model.number="fleteLocal" class="border px-2 py-1 w-28 ml-1">
+        <input type="number" step="1000" x-model.number="fleteLocal" class="border px-1.5 py-0.5 w-24 ml-1">
       </label>
       <button type="button" @click="resetParams()"
-              class="ml-auto bg-gray-200 hover:bg-gray-300 text-xs px-3 py-1 rounded"
+              class="ml-auto bg-gray-200 hover:bg-gray-300 px-2 py-0.5 rounded"
               title="Volver a los valores por defecto y limpiar retail editado">
         Reset
       </button>
@@ -29,46 +34,47 @@
               :class="editable
                 ? 'bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300'
                 : 'bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300'"
-              class="text-xs px-3 py-1 rounded inline-flex items-center gap-1"
+              class="px-2 py-0.5 rounded inline-flex items-center gap-1"
               :title="editable ? 'Edicion activa: los campos se guardan al perder foco' : 'Modo solo lectura: activa para editar productos'">
         <span x-text="editable ? '✏️' : '🔒'"></span>
         <span x-text="editable ? 'Editando' : 'Bloqueado'"></span>
       </button>
     </div>
 
-    <div class="flex gap-4 items-center flex-wrap mb-3 text-xs text-gray-600 border-t pt-2">
-      <span class="font-semibold uppercase">Descuentos + gastos (paso 10):</span>
-      <label>Descuentos %:
+    <div class="flex gap-3 items-center flex-wrap mb-1 text-gray-600 border-t pt-1">
+      <span class="font-semibold uppercase text-[10px]">Desc + gastos (paso 10):</span>
+      <label>Desc %:
         <input type="number" step="1" x-model.number="descuentosPct"
-               class="border px-2 py-1 w-16 ml-1">
+               class="border px-1.5 py-0.5 w-14 ml-1">
       </label>
-      <label>Descuentos NA %:
+      <label>Desc NA %:
         <input type="number" step="1" x-model.number="descuentosNaPct"
-               class="border px-2 py-1 w-16 ml-1">
+               class="border px-1.5 py-0.5 w-14 ml-1">
       </label>
-      <label>Gastos fijos %:
+      <label>Gastos %:
         <input type="number" step="1" x-model.number="gastoFijoPct"
-               class="border px-2 py-1 w-16 ml-1">
+               class="border px-1.5 py-0.5 w-14 ml-1">
       </label>
       <span class="text-gray-400">
         Total: <span x-text="(descuentosPct + descuentosNaPct + gastoFijoPct).toFixed(0)"></span>%
       </span>
-      <label class="ml-3">Gastos aduanales %:
+      <label class="ml-2">Aduanales %:
         <input type="number" step="0.5" x-model.number="gastosAduanalesPct"
-               class="border px-2 py-1 w-16 ml-1"
+               class="border px-1.5 py-0.5 w-14 ml-1"
                title="0 desactiva el paso 6 (no se aplica multiplicador)">
       </label>
     </div>
 
-    <div class="flex gap-3 items-center flex-wrap">
-      <input type="text" placeholder="Buscar SKU o descripcion..."
+    <div class="flex gap-2 items-center flex-wrap">
+      <input type="text" placeholder="Buscar SKU o descripcion... (atajo: /)"
+             x-ref="searchInput"
              x-model="q" @input.debounce.300ms="cargar()"
-             class="border px-3 py-1 rounded flex-1 min-w-[200px]">
+             class="border px-2 py-0.5 rounded flex-1 min-w-[200px]">
 
-      <label class="flex items-center gap-2">
-        <span>Categoria:</span>
+      <label class="flex items-center gap-1">
+        <span>Cat:</span>
         <select x-model="categoriaFiltro" @change="cargar()"
-                class="border px-2 py-1 rounded">
+                class="border px-1.5 py-0.5 rounded">
           <option value="">Todas</option>
           <template x-for="c in categorias" :key="c.categoria || '__nil__'">
             <option :value="c.categoria === null ? '__sin_categoria__' : c.categoria"
@@ -77,10 +83,10 @@
         </select>
       </label>
 
-      <label class="flex items-center gap-2">
-        <span>Proveedor:</span>
+      <label class="flex items-center gap-1">
+        <span>Prov:</span>
         <select x-model="proveedorFiltro" @change="cargar()"
-                class="border px-2 py-1 rounded max-w-[260px]">
+                class="border px-1.5 py-0.5 rounded max-w-[220px]">
           <option value="">Todos</option>
           <template x-for="pv in proveedores" :key="pv.id">
             <option :value="pv.id" x-text="pv.nombre + ' (' + pv.total + ')'"></option>
@@ -94,94 +100,102 @@
       </label>
 
       <button type="button" @click="marcarVisibles(true)"
-              class="bg-blue-100 hover:bg-blue-200 px-3 py-1 rounded text-blue-800">
-        Marcar visibles (<span x-text="productos.length"></span>)
+              class="bg-blue-100 hover:bg-blue-200 px-2 py-0.5 rounded text-blue-800">
+        Marcar (<span x-text="productos.length"></span>)
       </button>
       <button type="button" @click="marcarVisibles(false)"
-              class="bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded">
-        Desmarcar visibles
+              class="bg-gray-100 hover:bg-gray-200 px-2 py-0.5 rounded">
+        Desmarcar
       </button>
 
       <button type="button" @click="borrarMarcados()"
               :disabled="!totalMarcados"
-              class="bg-red-100 hover:bg-red-200 text-red-800 px-3 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              class="bg-red-100 hover:bg-red-200 text-red-800 px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               title="Borra TODOS los productos marcados (con sus snapshots, costos y fotos). Irreversible.">
-        🗑 Borrar marcados
+        🗑 Marcados
         <span class="ml-1 text-[10px]" x-show="totalMarcados !== null"
               x-text="'(' + (totalMarcados || 0) + ')'"></span>
       </button>
       <button type="button" @click="borrarProveedor()"
               :disabled="!proveedorFiltro"
-              class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              class="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               :title="proveedorFiltro ? 'Borra TODOS los productos del proveedor seleccionado' : 'Selecciona un proveedor para borrarlo'">
-        🗑 Borrar proveedor
+        🗑 Prov
       </button>
 
       <button type="button" @click="abrirUploadPdf()"
-              class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1 rounded inline-flex items-center gap-1"
+              class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Subir un PDF de cotizacion para extraer e ingestar productos automaticamente">
-        📥 Importar PDF
+        📥 PDF
       </button>
 
       <button type="button" @click="abrirValidarCbm()"
-              class="bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-1 rounded inline-flex items-center gap-1"
+              class="bg-cyan-600 hover:bg-cyan-700 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Recalcula CBM desde carton_dims y muestra discrepancias (CBM faltante o >50% off)">
-        🧮 Validar CBM
+        🧮 CBM
       </button>
 
       <button type="button" @click="abrirValidar40HQ()"
-              class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-1 rounded inline-flex items-center gap-1"
+              class="bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Calcula pzas_40hq = floor(67/CBM) x pzas_caja para productos que lo tienen vacio">
-        📦 Validar 40HQ
+        📦 40HQ
       </button>
 
       <button type="button" @click="exportarCategoria()" :disabled="!categoriaFiltro || categoriaFiltro === ''"
-              class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              class="bg-green-600 hover:bg-green-700 text-white px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               :title="categoriaFiltro ? 'Exportar categoria ' + categoriaFiltro : 'Selecciona una categoria para exportar por categoria'">
-        Exportar categoria
+        Exp cat
       </button>
       <button type="button" @click="exportarHD()"
-              class="bg-green-700 hover:bg-green-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
+              class="bg-green-700 hover:bg-green-800 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Genera el formato HD-Mascotas para enviar al cliente (usa parametros actuales)">
-        Exportar HD
-        <span class="bg-white text-green-800 text-xs font-bold px-2 py-0.5 rounded-full"
+        HD
+        <span class="bg-white text-green-800 text-[10px] font-bold px-1.5 py-0 rounded-full"
               x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
       </button>
       <button type="button" @click="exportarInterno()"
-              class="bg-purple-700 hover:bg-purple-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
+              class="bg-purple-700 hover:bg-purple-800 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Genera xlsx vertical con todas las columnas (uso interno, usa parametros actuales)">
-        Export interno
-        <span class="bg-white text-purple-800 text-xs font-bold px-2 py-0.5 rounded-full"
+        Interno
+        <span class="bg-white text-purple-800 text-[10px] font-bold px-1.5 py-0 rounded-full"
               x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
       </button>
       <button type="button" @click="exportarPD()"
-              class="bg-blue-700 hover:bg-blue-800 text-white px-4 py-1 rounded inline-flex items-center gap-2"
+              class="bg-blue-700 hover:bg-blue-800 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Genera Pet PD Format (Product Dimension) con productos marcados">
-        Exportar PD
-        <span class="bg-white text-blue-800 text-xs font-bold px-2 py-0.5 rounded-full"
+        PD
+        <span class="bg-white text-blue-800 text-[10px] font-bold px-1.5 py-0 rounded-full"
               x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
       </button>
       <button type="button" @click="exportarPDCategoria()" :disabled="!categoriaFiltro || categoriaFiltro === ''"
-              class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              class="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               :title="categoriaFiltro ? 'Exportar PD para categoria ' + categoriaFiltro : 'Selecciona una categoria primero'">
-        Exportar PD categoria
+        PD cat
       </button>
     </div>
 
-    <div class="mt-2 text-xs text-gray-600 flex items-center gap-3">
+    <div class="mt-1 text-[11px] text-gray-600 flex items-center gap-2 flex-wrap">
       <span><span x-text="productos.length"></span> filas visibles</span>
       <span x-show="totalMarcados !== null"
-            class="bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded font-semibold">
-        <span x-text="totalMarcados"></span> marcados en total
+            class="bg-yellow-100 text-yellow-800 px-1.5 py-0 rounded font-semibold">
+        <span x-text="totalMarcados"></span> marcados
       </span>
-      <span class="text-gray-400">Click en una fila para ver el detalle y los 14 pasos</span>
+      <span class="text-gray-400">Click fila = detalle</span>
+      <span class="ml-auto text-gray-400 text-[10px] flex items-center gap-1">
+        <kbd class="px-1 bg-gray-100 rounded border border-gray-300 font-mono">/</kbd> buscar
+        <span>·</span>
+        <kbd class="px-1 bg-gray-100 rounded border border-gray-300 font-mono">Home</kbd>/<kbd class="px-1 bg-gray-100 rounded border border-gray-300 font-mono">End</kbd> navegar
+        <span>·</span>
+        <kbd class="px-1 bg-gray-100 rounded border border-gray-300 font-mono">Esc</kbd> cerrar
+      </span>
     </div>
   </div>
 
   <!-- Tabla -->
   <div :class="detalle ? 'mr-[480px] transition-all' : 'transition-all'">
     <table class="bg-white w-full text-sm shadow rounded overflow-hidden">
-      <thead class="bg-gray-100 text-left">
+      <thead class="sticky z-30 bg-gray-100 text-left shadow-sm"
+             :style="`top: ${topBarHeight}px`">
         <tr>
           <th class="p-2">Foto</th>
           <th class="p-2">SKU</th>
@@ -275,6 +289,22 @@
         </tr>
       </tbody>
     </table>
+  </div>
+
+  <!-- FAB navegacion: ir arriba / ir al final. Aparece tras 200px de scroll. -->
+  <div x-show="mostrarFab"
+       x-transition.opacity
+       class="fixed bottom-6 z-40 flex flex-col gap-2 transition-all"
+       :class="detalle ? 'right-[504px]' : 'right-6'"
+       style="display:none">
+    <button @click="scrollTop()" title="Ir arriba (Home)"
+            class="w-11 h-11 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-xl shadow-lg flex items-center justify-center transition">
+      ↑
+    </button>
+    <button @click="scrollBottom()" title="Ir al final (End)"
+            class="w-11 h-11 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-xl shadow-lg flex items-center justify-center transition">
+      ↓
+    </button>
   </div>
 
   <!-- Panel lateral con detalle del producto + 14 pasos -->
@@ -1154,6 +1184,10 @@ function productosApp() {
     pzas40Cargando: false,
     pzas40Sugerencias: null,
     pzas40ResultadoAplicado: null,
+    // Navegacion: altura medida de la barra sticky superior (para offset del thead)
+    topBarHeight: 0,
+    // Navegacion: FAB visible cuando hay scroll > 200px
+    mostrarFab: false,
     // Persistir preferencia de "editable" en el navegador
     cargarEditable() {
       try { this.editable = localStorage.getItem('editable') === '1'; } catch (_) {}
@@ -1178,6 +1212,37 @@ function productosApp() {
       this.$watch('descuentosNaPct', () => this.refrescarDetalle());
       this.$watch('gastoFijoPct', () => this.refrescarDetalle());
       this.$watch('gastosAduanalesPct', () => this.refrescarDetalle());
+      // Navegacion: medir barra sticky y suscribir resize + scroll
+      this.$nextTick(() => this.recalcTopBar());
+      window.addEventListener('resize', () => this.recalcTopBar());
+      window.addEventListener('scroll', () => {
+        this.mostrarFab = window.scrollY > 200;
+      }, { passive: true });
+    },
+
+    // La altura real depende del flex-wrap del topBar (cambia con el ancho de ventana).
+    recalcTopBar() {
+      this.topBarHeight = this.$refs.topBar ? this.$refs.topBar.offsetHeight : 0;
+    },
+
+    scrollTop() { window.scrollTo({ top: 0, behavior: 'smooth' }); },
+    scrollBottom() { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); },
+
+    // Para que los atajos / Home End no se disparen mientras se escribe en un input.
+    esInputActivo() {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+    },
+
+    // Esc: prioriza cerrar el panel detalle; si no hay panel, hace blur del input activo.
+    manejarEscape() {
+      if (this.detalle) {
+        this.detalle = null;
+      } else if (this.esInputActivo()) {
+        document.activeElement.blur();
+      }
     },
 
     async cargarCategorias() {
