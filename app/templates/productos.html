@@ -69,10 +69,10 @@
       <input type="text" placeholder="Buscar SKU o descripcion... (atajo: /)"
              x-ref="searchInput"
              x-model="q" @input.debounce.300ms="cargar()"
-             class="border px-2 py-0.5 rounded flex-1 min-w-[200px]">
+             class="border px-2 py-0.5 rounded flex-1 min-w-[220px]">
 
       <label class="flex items-center gap-1">
-        <span>Cat:</span>
+        <span>Categoria:</span>
         <select x-model="categoriaFiltro" @change="cargar()"
                 class="border px-1.5 py-0.5 rounded">
           <option value="">Todas</option>
@@ -84,7 +84,7 @@
       </label>
 
       <label class="flex items-center gap-1">
-        <span>Prov:</span>
+        <span>Proveedor:</span>
         <select x-model="proveedorFiltro" @change="cargar()"
                 class="border px-1.5 py-0.5 rounded max-w-[220px]">
           <option value="">Todos</option>
@@ -101,76 +101,86 @@
 
       <button type="button" @click="marcarVisibles(true)"
               class="bg-blue-100 hover:bg-blue-200 px-2 py-0.5 rounded text-blue-800">
-        Marcar (<span x-text="productos.length"></span>)
+        Marcar visibles (<span x-text="productos.length"></span>)
       </button>
       <button type="button" @click="marcarVisibles(false)"
               class="bg-gray-100 hover:bg-gray-200 px-2 py-0.5 rounded">
-        Desmarcar
+        Desmarcar visibles
       </button>
+    </div>
 
+    <!-- Fila de acciones / exportaciones (en su propia linea para que se lean bien) -->
+    <div class="flex gap-2 items-center flex-wrap mt-1">
       <button type="button" @click="borrarMarcados()"
               :disabled="!totalMarcados"
               class="bg-red-100 hover:bg-red-200 text-red-800 px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               title="Borra TODOS los productos marcados (con sus snapshots, costos y fotos). Irreversible.">
-        🗑 Marcados
+        🗑 Borrar marcados
         <span class="ml-1 text-[10px]" x-show="totalMarcados !== null"
               x-text="'(' + (totalMarcados || 0) + ')'"></span>
       </button>
+      <button type="button" @click="renombrarProveedor()"
+              :disabled="!proveedorFiltro"
+              class="bg-gray-200 hover:bg-gray-300 px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="proveedorFiltro ? 'Renombrar el proveedor seleccionado' : 'Selecciona un proveedor para renombrarlo'">
+        ✏️ Renombrar
+      </button>
+
       <button type="button" @click="borrarProveedor()"
               :disabled="!proveedorFiltro"
               class="bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               :title="proveedorFiltro ? 'Borra TODOS los productos del proveedor seleccionado' : 'Selecciona un proveedor para borrarlo'">
-        🗑 Prov
+        🗑 Borrar proveedor
       </button>
 
       <button type="button" @click="abrirUploadPdf()"
               class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Subir un PDF de cotizacion para extraer e ingestar productos automaticamente">
-        📥 PDF
+        📥 Importar PDF
       </button>
 
       <button type="button" @click="abrirValidarCbm()"
               class="bg-cyan-600 hover:bg-cyan-700 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Recalcula CBM desde carton_dims y muestra discrepancias (CBM faltante o >50% off)">
-        🧮 CBM
+        🧮 Validar CBM
       </button>
 
       <button type="button" @click="abrirValidar40HQ()"
               class="bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Calcula pzas_40hq = floor(67/CBM) x pzas_caja para productos que lo tienen vacio">
-        📦 40HQ
+        📦 Validar 40HQ
       </button>
 
       <button type="button" @click="exportarCategoria()" :disabled="!categoriaFiltro || categoriaFiltro === ''"
               class="bg-green-600 hover:bg-green-700 text-white px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               :title="categoriaFiltro ? 'Exportar categoria ' + categoriaFiltro : 'Selecciona una categoria para exportar por categoria'">
-        Exp cat
+        Exportar categoria
       </button>
       <button type="button" @click="exportarHD()"
               class="bg-green-700 hover:bg-green-800 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Genera el formato HD-Mascotas para enviar al cliente (usa parametros actuales)">
-        HD
+        Exportar HD
         <span class="bg-white text-green-800 text-[10px] font-bold px-1.5 py-0 rounded-full"
               x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
       </button>
       <button type="button" @click="exportarInterno()"
               class="bg-purple-700 hover:bg-purple-800 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Genera xlsx vertical con todas las columnas (uso interno, usa parametros actuales)">
-        Interno
+        Exportar interno
         <span class="bg-white text-purple-800 text-[10px] font-bold px-1.5 py-0 rounded-full"
               x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
       </button>
       <button type="button" @click="exportarPD()"
               class="bg-blue-700 hover:bg-blue-800 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Genera Pet PD Format (Product Dimension) con productos marcados">
-        PD
+        Exportar PD
         <span class="bg-white text-blue-800 text-[10px] font-bold px-1.5 py-0 rounded-full"
               x-text="totalMarcados !== null ? totalMarcados : '...'"></span>
       </button>
       <button type="button" @click="exportarPDCategoria()" :disabled="!categoriaFiltro || categoriaFiltro === ''"
               class="bg-blue-600 hover:bg-blue-700 text-white px-2 py-0.5 rounded disabled:opacity-40 disabled:cursor-not-allowed"
               :title="categoriaFiltro ? 'Exportar PD para categoria ' + categoriaFiltro : 'Selecciona una categoria primero'">
-        PD cat
+        Exportar PD categoria
       </button>
     </div>
 
@@ -579,6 +589,134 @@
           </div>
         </div>
 
+        <!-- Competencia (Amazon MX / Mercado Libre MX / Petco MX) -->
+        <div class="mb-3 bg-amber-50 border border-amber-200 p-3 rounded">
+          <div class="flex justify-between items-center mb-1">
+            <button type="button" @click="competencia.mostrar = !competencia.mostrar"
+                    class="text-xs uppercase font-semibold text-amber-800 flex items-center gap-1">
+              <span x-text="competencia.mostrar ? '▾' : '▸'"></span>
+              Competencia (Amazon MX / ML MX / Petco MX)
+              <span class="text-amber-600 normal-case font-normal"
+                    x-show="competencia.guardados.length"
+                    x-text="'(' + competencia.guardados.length + ')'"></span>
+            </button>
+            <button type="button" @click="competencia.mostrar = true; buscarCompetencia()"
+                    :disabled="competencia.buscando"
+                    class="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-2 py-1 rounded text-xs">
+              <span x-show="!competencia.buscando">🔍 Buscar</span>
+              <span x-show="competencia.buscando">Buscando…</span>
+            </button>
+          </div>
+
+          <div x-show="competencia.mostrar" class="mt-2">
+            <!-- query editable -->
+            <div class="flex gap-1 items-center text-xs mb-2">
+              <input type="text" x-model="competencia.query"
+                     placeholder="texto de búsqueda (descripción + medidas + material)"
+                     class="border px-2 py-1 rounded flex-1 text-xs">
+              <button type="button" @click="buscarCompetencia()" :disabled="competencia.buscando"
+                      class="border px-2 py-1 rounded text-xs disabled:opacity-50">Re-buscar</button>
+            </div>
+
+            <template x-if="precioReferencia()">
+              <div class="text-[11px] text-gray-600 mb-2">
+                Nuestro precio (psicológico, c/IVA):
+                <span class="font-mono font-semibold" x-text="'$' + precioReferencia().toFixed(2)"></span>
+              </div>
+            </template>
+
+            <template x-if="competencia.error">
+              <div class="text-[11px] text-amber-700 mb-2" x-text="competencia.error"></div>
+            </template>
+
+            <!-- Candidatos a confirmar -->
+            <template x-if="competencia.candidatos.length">
+              <div class="mb-3 border border-amber-300 rounded p-2 bg-white">
+                <div class="text-[11px] font-semibold text-amber-800 mb-1">
+                  Candidatos — marca los que sí corresponden:
+                </div>
+                <template x-for="(c, i) in competencia.candidatos" :key="i">
+                  <label class="flex items-start gap-2 text-xs py-1 border-b last:border-0 cursor-pointer">
+                    <input type="checkbox" x-model="competencia.seleccion[i]" class="mt-0.5">
+                    <span class="flex-1">
+                      <span class="inline-block px-1 rounded text-[9px] font-semibold align-middle"
+                            :class="mpBadge(c.marketplace)"
+                            x-text="mpLabel(c.marketplace)"></span>
+                      <a :href="c.url" target="_blank" class="text-blue-700 hover:underline" x-text="c.titulo"></a>
+                      <span class="block text-[10px] text-gray-500">
+                        <span class="font-mono font-semibold" x-show="c.precio_mxn" x-text="'$' + (c.precio_mxn || 0).toFixed(2)"></span>
+                        <span x-show="c.rating" x-text="' · ⭐' + c.rating + (c.num_reviews ? ' (' + c.num_reviews + ')' : '')"></span>
+                        <span x-show="c.vendedor" x-text="' · ' + c.vendedor"></span>
+                        <span x-show="c.confianza_match != null" x-text="' · conf ' + Math.round((c.confianza_match || 0) * 100) + '%'"></span>
+                      </span>
+                    </span>
+                  </label>
+                </template>
+                <button type="button" @click="guardarCompetenciaSeleccionados()"
+                        class="mt-2 bg-amber-600 hover:bg-amber-700 text-white px-2 py-1 rounded text-xs">
+                  Guardar seleccionados (<span x-text="nSeleccionCompetencia()"></span>)
+                </button>
+              </div>
+            </template>
+
+            <!-- Guardados -->
+            <template x-if="competencia.guardados.length">
+              <div>
+                <table class="w-full text-xs mb-2">
+                  <tbody>
+                    <template x-for="c in competencia.guardados" :key="c.id">
+                      <tr class="border-b last:border-0">
+                        <td class="py-1">
+                          <span class="inline-block px-1 rounded text-[9px] font-semibold align-middle"
+                                :class="mpBadge(c.marketplace)"
+                                x-text="mpLabel(c.marketplace)"></span>
+                          <a :href="c.url" target="_blank" class="text-blue-700 hover:underline" x-text="c.titulo"></a>
+                        </td>
+                        <td class="py-1 text-right font-mono whitespace-nowrap"
+                            x-text="c.precio_mxn ? '$' + c.precio_mxn.toFixed(2) : '—'"></td>
+                        <td class="py-1 text-right">
+                          <button type="button" @click="borrarCompetidor(c)"
+                                  class="text-red-600 hover:underline text-[10px]">borrar</button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+
+                <template x-if="competencia.resumen && competencia.resumen.global && competencia.resumen.global.prom">
+                  <div class="text-[11px] bg-white border border-amber-300 rounded p-2">
+                    <div class="font-semibold text-amber-800 mb-1">Resumen de mercado (c/IVA)</div>
+                    <template x-for="mk in [['amazon_mx','Amazon'],['mercadolibre_mx','ML'],['petco_mx','Petco'],['global','Global']]" :key="mk[0]">
+                      <template x-if="competencia.resumen[mk[0]] && competencia.resumen[mk[0]].prom">
+                        <div class="font-mono">
+                          <span x-text="mk[1]"></span>:
+                          min $<span x-text="competencia.resumen[mk[0]].min.toFixed(0)"></span>
+                          · prom $<span x-text="competencia.resumen[mk[0]].prom.toFixed(0)"></span>
+                          · max $<span x-text="competencia.resumen[mk[0]].max.toFixed(0)"></span>
+                          <span class="text-gray-400" x-text="'(n=' + competencia.resumen[mk[0]].n + ')'"></span>
+                        </div>
+                      </template>
+                    </template>
+                    <template x-if="precioReferencia() && posicionVsMercado()">
+                      <div class="mt-1 font-semibold"
+                           :class="{'text-red-700': posicionVsMercado()==='caro','text-green-700': posicionVsMercado()==='barato','text-gray-700': posicionVsMercado()==='enrango'}">
+                        Nuestro precio $<span x-text="precioReferencia().toFixed(0)"></span>:
+                        <span x-show="posicionVsMercado()==='caro'">por ARRIBA del mercado</span>
+                        <span x-show="posicionVsMercado()==='barato'">por DEBAJO del mercado</span>
+                        <span x-show="posicionVsMercado()==='enrango'">dentro del rango</span>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <template x-if="!competencia.guardados.length && !competencia.candidatos.length && !competencia.buscando">
+              <div class="text-xs text-gray-500">Sin competencia guardada. Click "🔍 Buscar" para consultar Amazon MX, ML MX y Petco MX (precio c/IVA, estimado al momento).</div>
+            </template>
+          </div>
+        </div>
+
         <!-- Resumen margen Lloyds (siempre visible) -->
         <template x-if="parseFloat(detalle.pasos[8].valor) > 0">
           <div class="mb-3 rounded-lg p-3 border-2"
@@ -737,7 +875,11 @@
                              paso.n === 13 ? 'bg-green-50 font-semibold' : '',
                              paso.n === 14 ? 'bg-green-100 font-bold' : '']">
                   <td class="py-1 pr-2 text-right text-gray-400 w-6" x-text="paso.n"></td>
-                  <td class="py-1 pr-2" x-text="paso.label"></td>
+                  <td class="py-1 pr-2">
+                    <span x-text="paso.label"></span>
+                    <span x-show="paso.nota" class="text-gray-400 font-normal"
+                          x-text="'(' + paso.nota + ')'"></span>
+                  </td>
                   <td class="py-1 text-right font-mono" x-text="formatearValor(paso.valor)"></td>
                 </tr>
               </template>
@@ -864,8 +1006,9 @@
       <!-- Spinner durante procesado -->
       <div x-show="subiendoPdf" class="text-center py-8">
         <div class="text-4xl animate-pulse">⏳</div>
-        <div class="text-sm font-semibold mt-3">Procesando PDF...</div>
-        <div class="text-xs text-gray-500 mt-1">Adobe Extract + Claude. Puede tardar 10-60 segundos.</div>
+        <div class="text-sm font-semibold mt-3">Procesando PDF<span x-text="uploadPdfElapsed ? ' (' + uploadPdfElapsed + 's)' : '...'"></span></div>
+        <div class="text-xs text-gray-500 mt-1">Adobe Extract + Claude. Corre en segundo plano; un PDF pesado puede tardar 1-3 min.</div>
+        <div class="text-[11px] text-gray-400 mt-1">Puedes dejar esta ventana abierta; no se cerrara la conexion.</div>
       </div>
 
       <!-- Botones -->
@@ -1159,6 +1302,17 @@ function productosApp() {
     nuevoCostoMonto: null,
     snapshots: [],
     mostrarHistorial: false,
+    // Competencia (Amazon MX / Mercado Libre MX)
+    competencia: {
+      guardados: [],
+      candidatos: [],
+      query: '',
+      buscando: false,
+      seleccion: {},        // indice de candidato -> bool
+      resumen: null,
+      error: '',
+      mostrar: false,
+    },
     // Modo edicion global (off por defecto: protege contra cambios accidentales)
     editable: false,
     // Estado de guardado por (producto_id + ':' + campo) -> 'saving' | 'ok' | 'error'
@@ -1173,6 +1327,7 @@ function productosApp() {
     uploadPdfFile: null,
     uploadPdfForzar: false,
     uploadPdfResultado: null,
+    uploadPdfElapsed: 0,
     // Validar CBM
     mostrarValidarCbm: false,
     cbmCargando: false,
@@ -1483,6 +1638,32 @@ function productosApp() {
       await this.cargar();
     },
 
+    // Renombra el proveedor seleccionado en el filtro. Si el nombre nuevo
+    // matchea a otro proveedor, el backend fusiona (mueve productos + borra
+    // el duplicado).
+    async renombrarProveedor() {
+      if (!this.proveedorFiltro) return;
+      const pv = this.proveedores.find(x => String(x.id) === String(this.proveedorFiltro));
+      if (!pv) return;
+      const nuevo = prompt('Nuevo nombre para el proveedor:', pv.nombre);
+      if (nuevo === null) return;
+      if (!nuevo.trim() || nuevo.trim() === pv.nombre) return;
+      const r = await fetch(`/api/proveedores/${pv.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nombre: nuevo.trim() }),
+      });
+      if (!r.ok) { alert('Error: ' + r.status); return; }
+      const j = await r.json();
+      if (j.fusionado) {
+        alert(`Fusionado con "${j.nombre}": ${j.movidos} movido(s), ` +
+              `${j.descartados} descartado(s) por SKU duplicado.`);
+      }
+      this.proveedorFiltro = String(j.proveedor_id);   // sigue el proveedor resultante
+      await this.cargarProveedores();
+      await this.cargar();
+    },
+
     // Borra TODOS los productos del proveedor actualmente seleccionado en el
     // filtro. Requiere doble confirmacion (texto del nombre).
     async borrarProveedor() {
@@ -1531,6 +1712,10 @@ function productosApp() {
         this.origen = null;
         this.snapshots = [];
         this.mostrarHistorial = false;
+        this.competencia = {
+          guardados: [], candidatos: [], query: '', buscando: false,
+          seleccion: {}, resumen: null, error: '', mostrar: this.competencia.mostrar,
+        };
         // Marca cual es el producto que estamos esperando. Si el usuario
         // cambia de producto antes de que el fetch responda, descartamos
         // la respuesta vieja comparando contra este valor.
@@ -1568,6 +1753,8 @@ function productosApp() {
         return;
       }
       this.detalle = await r.json();
+      // Cargar competencia guardada en paralelo (no bloquea el render).
+      this.cargarCompetencia(producto_id);
     },
 
     async aplicarParamsDeSnapshot(producto_id) {
@@ -1745,11 +1932,110 @@ function productosApp() {
       if (this.mostrarHistorial) await this.cargarSnapshots();
     },
 
+    // ---- Competencia (Amazon MX / Mercado Libre MX) ----
+
+    // Nuestro precio de comparacion = retail editado si existe, si no el
+    // paso 14 (precio psicologico). Ambos son precio al publico c/IVA, igual
+    // que los precios de Amazon/ML. NO usar paso 11 (venta a HD, sin IVA).
+    precioReferencia() {
+      if (this.retailEditado) return this.retailEditado;
+      if (this.detalle && this.detalle.pasos && this.detalle.pasos[13]) {
+        const v = parseFloat(this.detalle.pasos[13].valor);
+        return isNaN(v) ? null : v;
+      }
+      return null;
+    },
+
+    // Etiqueta y color de badge por marketplace (Amazon / ML / Petco).
+    mpLabel(mk) { return {amazon_mx:'Amazon', mercadolibre_mx:'ML', petco_mx:'Petco'}[mk] || mk; },
+    mpBadge(mk) { return {amazon_mx:'bg-yellow-200 text-yellow-900', mercadolibre_mx:'bg-blue-200 text-blue-900', petco_mx:'bg-rose-200 text-rose-900'}[mk] || 'bg-gray-200 text-gray-800'; },
+
+    async cargarCompetencia(producto_id) {
+      try {
+        const r = await fetch(`/api/productos/${producto_id}/competencia`);
+        if (!r.ok) return;
+        const j = await r.json();
+        // Descartar si el usuario cambio de producto mientras llegaba.
+        if (!this.detalle || this.detalle.producto_id !== producto_id) return;
+        this.competencia.guardados = j.items || [];
+        this.competencia.resumen = j.resumen || null;
+      } catch (e) {
+        console.warn('No pude cargar competencia', e);
+      }
+    },
+
+    async buscarCompetencia() {
+      if (!this.detalle) return;
+      this.competencia.buscando = true;
+      this.competencia.error = '';
+      this.competencia.candidatos = [];
+      this.competencia.seleccion = {};
+      try {
+        const r = await fetch(`/api/productos/${this.detalle.producto_id}/competencia/buscar`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: this.competencia.query || null }),
+        });
+        const j = await r.json();
+        if (!r.ok) { this.competencia.error = 'Error ' + r.status; return; }
+        this.competencia.query = j.query || this.competencia.query;
+        this.competencia.candidatos = j.candidatos || [];
+        if (j.error) this.competencia.error = j.error;
+        // Pre-marcar los de confianza alta (>= 0.7).
+        this.competencia.candidatos.forEach((c, i) => {
+          this.competencia.seleccion[i] = (c.confianza_match || 0) >= 0.7;
+        });
+      } catch (e) {
+        this.competencia.error = 'Error de red: ' + e;
+      } finally {
+        this.competencia.buscando = false;
+      }
+    },
+
+    nSeleccionCompetencia() {
+      return Object.values(this.competencia.seleccion).filter(Boolean).length;
+    },
+
+    async guardarCompetenciaSeleccionados() {
+      if (!this.detalle) return;
+      const items = this.competencia.candidatos.filter((c, i) => this.competencia.seleccion[i]);
+      if (!items.length) { alert('Marca al menos un listing'); return; }
+      const r = await fetch(`/api/productos/${this.detalle.producto_id}/competencia`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items, query: this.competencia.query || null }),
+      });
+      if (!r.ok) { alert('Error guardando: ' + r.status); return; }
+      const j = await r.json();
+      this.competencia.guardados = j.items || [];
+      this.competencia.resumen = j.resumen || null;
+      this.competencia.candidatos = [];
+      this.competencia.seleccion = {};
+    },
+
+    async borrarCompetidor(c) {
+      if (!confirm('Borrar este listing de competencia?')) return;
+      await fetch(`/api/productos/${c.producto_id}/competencia/${c.id}`, { method: 'DELETE' });
+      await this.cargarCompetencia(this.detalle.producto_id);
+    },
+
+    // Posicion vs mercado: 'caro' | 'barato' | 'enrango' segun precio
+    // de referencia contra el promedio de competencia.
+    posicionVsMercado() {
+      const ref = this.precioReferencia();
+      const g = this.competencia.resumen && this.competencia.resumen.global;
+      if (!ref || !g || !g.prom) return null;
+      if (ref > g.max) return 'caro';
+      if (ref < g.min) return 'barato';
+      return 'enrango';
+    },
+
     abrirUploadPdf() {
       this.mostrarUploadPdf = true;
       this.uploadPdfFile = null;
       this.uploadPdfForzar = false;
       this.uploadPdfResultado = null;
+      this.uploadPdfElapsed = 0;
     },
 
     cerrarUploadPdf() {
@@ -1768,46 +2054,94 @@ function productosApp() {
       fd.append('file', this.uploadPdfFile);
       fd.append('forzar', this.uploadPdfForzar ? 'true' : 'false');
       this.subiendoPdf = true;
+      this.uploadPdfElapsed = 0;
+      this.uploadPdfResultado = null;
       try {
-        const r = await fetch('/api/ingest/pdf', { method: 'POST', body: fd });
-        let body = null;
-        try { body = await r.json(); } catch (_) {}
-        if (r.status === 200 && body && body.ok) {
-          const veredicto = body.veredicto || 'OK';
-          const forzadoNota = body.forzado ? ' [forzado]' : '';
-          this.uploadPdfResultado = {
-            tipo: 'ok',
-            mensaje: `Proveedor "${body.proveedor}": +${body.productos_nuevos} productos nuevos `
-                   + `(${body.productos_totales_proveedor} totales). Veredicto: ${veredicto}${forzadoNota}.`,
-          };
-          // Refrescar grilla y filtros con los datos nuevos
-          await this.cargarCategorias();
-          await this.cargarProveedores();
-          await this.cargar();
-        } else if (r.status === 422 && body && body.puede_forzar) {
-          this.uploadPdfResultado = {
-            tipo: 'gate',
-            mensaje: body.motivo || 'Calidad de extraccion baja',
-            log: body.log || '',
-          };
-        } else {
-          // Otros 4xx/5xx: prefiere motivo > detail > mensaje generico.
-          // Si vino veredicto (ej. VACIO), lo incluye para contexto.
-          const partes = [];
-          if (body && body.veredicto) partes.push('Veredicto: ' + body.veredicto);
-          if (body && body.motivo) partes.push(body.motivo);
-          else if (body && body.detail) partes.push(body.detail);
-          else partes.push('Error HTTP ' + r.status);
-          this.uploadPdfResultado = {
-            tipo: 'error',
-            mensaje: partes.join(' — '),
-            log: (body && body.log) || '',
-          };
+        // 1) Encolar el job. El backend responde al instante (202) con job_id
+        //    y procesa en segundo plano (evita el timeout 524 de Cloudflare).
+        const r0 = await fetch('/api/ingest/pdf', { method: 'POST', body: fd });
+        let inicio = null;
+        try { inicio = await r0.json(); } catch (_) {}
+        if (r0.status !== 202 || !inicio || !inicio.job_id) {
+          // Validacion rapida fallida (400/413) u otro error sincrono.
+          await this._aplicarResultadoPdf(r0.status, inicio || {});
+          return;
+        }
+        // 2) Polling del estado hasta que termine.
+        const jobId = inicio.job_id;
+        const INTERVALO = 3000;            // 3 s entre consultas
+        const MAX_ESPERA = 15 * 60 * 1000; // techo de 15 min
+        const t0 = Date.now();
+        while (true) {
+          await new Promise(res => setTimeout(res, INTERVALO));
+          let rs, est = null;
+          try {
+            rs = await fetch('/api/ingest/pdf/status/' + jobId);
+            try { est = await rs.json(); } catch (_) {}
+          } catch (e) {
+            // Parpadeo de red: reintentar hasta el techo de espera.
+            if (Date.now() - t0 > MAX_ESPERA) {
+              this.uploadPdfResultado = { tipo: 'error', mensaje: 'Se perdio la conexion durante el procesado. Revisa el catalogo antes de reintentar.' };
+              return;
+            }
+            continue;
+          }
+          if (rs.status === 404) {
+            this.uploadPdfResultado = { tipo: 'error', mensaje: (est && est.detail) || 'El proceso se perdio (servidor reiniciado). Reintenta.' };
+            return;
+          }
+          if (est && typeof est.elapsed === 'number') this.uploadPdfElapsed = Math.round(est.elapsed);
+          if (est && est.estado === 'listo') {
+            await this._aplicarResultadoPdf(est.http_status, est.resultado || {});
+            return;
+          }
+          if (Date.now() - t0 > MAX_ESPERA) {
+            this.uploadPdfResultado = { tipo: 'error', mensaje: 'El procesado supero los 15 min. Puede haber quedado a medias; revisa el catalogo.' };
+            return;
+          }
+          // estado === 'procesando': seguir el loop
         }
       } catch (e) {
         this.uploadPdfResultado = { tipo: 'error', mensaje: 'Error de red: ' + e.message };
       } finally {
         this.subiendoPdf = false;
+      }
+    },
+
+    // Aplica el desenlace del ingest a la UI. Misma logica para el resultado
+    // sincrono (validaciones) y el del polling (status del job).
+    async _aplicarResultadoPdf(status, body) {
+      if (status === 200 && body && body.ok) {
+        const veredicto = body.veredicto || 'OK';
+        const forzadoNota = body.forzado ? ' [forzado]' : '';
+        this.uploadPdfResultado = {
+          tipo: 'ok',
+          mensaje: `Proveedor "${body.proveedor}": +${body.productos_nuevos} productos nuevos `
+                 + `(${body.productos_totales_proveedor} totales). Veredicto: ${veredicto}${forzadoNota}.`,
+        };
+        // Refrescar grilla y filtros con los datos nuevos
+        await this.cargarCategorias();
+        await this.cargarProveedores();
+        await this.cargar();
+      } else if (status === 422 && body && body.puede_forzar) {
+        this.uploadPdfResultado = {
+          tipo: 'gate',
+          mensaje: body.motivo || 'Calidad de extraccion baja',
+          log: body.log || '',
+        };
+      } else {
+        // Otros 4xx/5xx: prefiere motivo > detail > mensaje generico.
+        // Si vino veredicto (ej. VACIO), lo incluye para contexto.
+        const partes = [];
+        if (body && body.veredicto) partes.push('Veredicto: ' + body.veredicto);
+        if (body && body.motivo) partes.push(body.motivo);
+        else if (body && body.detail) partes.push(body.detail);
+        else partes.push('Error HTTP ' + status);
+        this.uploadPdfResultado = {
+          tipo: 'error',
+          mensaje: partes.join(' — '),
+          log: (body && body.log) || '',
+        };
       }
     },
 

@@ -144,6 +144,37 @@ class CotizacionSnapshot(Base):
     producto = relationship("Producto", backref="snapshots")
 
 
+class CompetidorListing(Base):
+    """Listing de competencia (Amazon MX / Mercado Libre MX) por producto.
+
+    Se llena cuando el usuario busca el articulo en marketplaces (via Claude
+    web_search desde app/competencia.py) y CONFIRMA manualmente cuales
+    coinciden. Solo se guardan los confirmados; los candidatos crudos de la
+    busqueda son efimeros (no se persisten).
+
+    precio_mxn es precio al consumidor final con IVA (lo que lista el
+    marketplace), comparable contra el paso 14 / retail psicologico del motor,
+    NO contra el paso 11 (venta a HD, sin IVA). Es un estimado al momento de
+    creado_en: precios de Amazon/ML cambian por variante/oferta/fecha.
+    """
+    __tablename__ = "competidor_listings"
+    id = Column(Integer, primary_key=True)
+    producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
+    marketplace = Column(String(20), nullable=False)  # 'amazon_mx' | 'mercadolibre_mx' | 'petco_mx'
+    titulo = Column(Text, nullable=False)
+    precio_mxn = Column(Float)
+    rating = Column(Float)
+    num_reviews = Column(Integer)
+    vendedor = Column(String(200))
+    url = Column(Text)
+    imagen_url = Column(Text)
+    busqueda_query = Column(Text)  # query con la que se encontro (trazabilidad)
+    notas = Column(Text)
+    creado_en = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    producto = relationship("Producto", backref="competidores")
+
+
 class Categoria(Base):
     """Categoria de producto. Sembrada desde config/categorias.yml.
 

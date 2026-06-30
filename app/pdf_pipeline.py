@@ -74,12 +74,19 @@ def procesar_pdf(
     # nada util. Pasar --claude garantiza que siempre intentamos LLM extract
     # (~$0.005-$0.02 por PDF) -- aceptable para uso interno de cotizaciones y
     # previene el caso de proveedor falso por seller=None.
+    # --no-hd: NO correr el paso 4 de pdf_a_formato_hd (llenar_formato_hd.py,
+    # que rellena el "Pet Quote Sheet 2026.xlsb" via Excel COM/pywin32). El
+    # ingest web solo necesita el _intermedio_*.xlsx para la BD; nunca usa el
+    # .xlsb. Ese paso de Excel COM (a) es lento y empujaba el request sobre los
+    # ~100s -> 524 de Cloudflare, y (b) se CUELGA si el usuario tiene Excel
+    # abierto (la automatizacion COM se ata a esa instancia y queda esperando un
+    # dialogo modal). El export HD sigue disponible aparte (Exportar HD / CLI).
     # encoding="utf-8" + PYTHONIOENCODING: el subprocess imprime headers
     # potencialmente CJK (cotizaciones chinas) y en Windows el pipe default es
     # cp1252, que revienta con UnicodeEncodeError en el hijo.
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(
-        [sys.executable, str(PDF_A_FORMATO_HD), str(pdf_path), "--claude"],
+        [sys.executable, str(PDF_A_FORMATO_HD), str(pdf_path), "--claude", "--no-hd"],
         cwd=str(PROYECTO_ROOT),
         capture_output=True,
         text=True,

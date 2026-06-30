@@ -6,7 +6,29 @@
 <title>{% block title %}Mascotas BD{% endblock %}</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+<!-- Markdown + sanitizado para la seccion de Ayuda (sincronos, antes de Alpine que usa defer) -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+  /* Estilo del Markdown renderizado (Tailwind CDN no trae el plugin typography/prose,
+     y su preflight quita estilos de listas/encabezados, asi que se redeclaran). */
+  .md-content h1{font-size:1.5rem;font-weight:700;margin:1rem 0 .5rem}
+  .md-content h2{font-size:1.25rem;font-weight:600;margin:1.25rem 0 .5rem}
+  .md-content h3{font-size:1.05rem;font-weight:600;margin:.75rem 0 .25rem}
+  .md-content p{margin:.5rem 0;line-height:1.6}
+  .md-content ul,.md-content ol{margin:.5rem 0;padding-left:1.5rem;list-style:revert}
+  .md-content li{margin:.25rem 0}
+  .md-content code{background:#f3f4f6;padding:.1rem .3rem;border-radius:.25rem;font-size:.85em}
+  .md-content pre{background:#f3f4f6;padding:.75rem;border-radius:.375rem;overflow:auto}
+  .md-content table{border-collapse:collapse;margin:.75rem 0;width:100%}
+  .md-content th,.md-content td{border:1px solid #e5e7eb;padding:.4rem .6rem;text-align:left;vertical-align:top}
+  .md-content th{background:#f9fafb;font-weight:600}
+  .md-content a{color:#2563eb;text-decoration:underline}
+  .md-content blockquote{border-left:3px solid #e5e7eb;padding-left:.75rem;color:#4b5563;margin:.5rem 0}
+  .md-content dt{font-weight:600;margin-top:.5rem}
+  .md-content dd{margin:0 0 .25rem .75rem;color:#374151}
+</style>
 </head>
 <body class="bg-gray-50 text-gray-900">
 {% set u = request.session.get('user') if request else None %}
@@ -20,8 +42,51 @@
       <a href="/aranceles" class="hover:underline ml-4">Aranceles</a>
       <a href="/usuarios" class="hover:underline ml-4">Usuarios</a>
       <a href="/exportar" class="hover:underline ml-4">Exportar marcados</a>
+      <a href="/ayuda" class="hover:underline ml-4">Ayuda</a>
     </nav>
     {% if u %}
+      <!-- Boton de ayuda rapida (?) + modal. x-data independiente: no choca con el de cada pagina. -->
+      <div x-data="ayudaModal()">
+        <button type="button" @click="abrir()" title="Ayuda"
+                class="w-7 h-7 rounded-full border border-gray-300 text-sm text-gray-600 hover:bg-gray-100 leading-none">?</button>
+
+        <div x-show="open" x-transition.opacity style="display:none"
+             class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+             @keydown.escape.window="open = false">
+          <div @click.outside="open = false"
+               class="bg-white rounded-lg shadow-xl w-[90vw] max-w-3xl max-h-[85vh] flex flex-col">
+            <div class="flex justify-between items-center px-4 py-2 border-b">
+              <h2 class="font-bold">Ayuda</h2>
+              <div class="flex items-center gap-3">
+                <a href="/ayuda" class="text-blue-600 hover:underline text-xs">Ver manual completo</a>
+                <button type="button" @click="open = false"
+                        class="text-gray-400 hover:text-gray-700 text-lg leading-none">&times;</button>
+              </div>
+            </div>
+            <div class="overflow-y-auto p-4">
+              <template x-if="cargando">
+                <p class="text-gray-500">Cargando…</p>
+              </template>
+              <template x-if="!cargando && secciones.length > 0">
+                <div>
+                  <select x-model="actualId"
+                          class="border rounded px-2 py-1 text-sm mb-3 w-full">
+                    <template x-for="s in secciones" :key="s.id">
+                      <option :value="s.id" x-text="s.titulo"></option>
+                    </template>
+                  </select>
+                  <div class="md-content"
+                       x-html="renderMarkdown(seccionActual ? seccionActual.markdown : '')"></div>
+                </div>
+              </template>
+              <template x-if="!cargando && secciones.length === 0">
+                <p class="text-red-600">No se pudo cargar la ayuda.</p>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="flex items-center gap-3 text-sm border-l pl-4 border-gray-200">
         <span class="text-gray-700" title="{{ u.email }}">{{ u.nombre or u.email }}</span>
         <a href="/logout" class="text-red-600 hover:underline text-xs">Salir</a>
@@ -32,5 +97,43 @@
 <main class="p-6">
   {% block content %}{% endblock %}
 </main>
+
+<script>
+  // Render de Markdown compartido por la pagina /ayuda y el modal "?". Una sola implementacion.
+  function renderMarkdown(md) {
+    if (!window.marked) return '';
+    const html = marked.parse(md || '');
+    return window.DOMPurify ? DOMPurify.sanitize(html) : html;
+  }
+
+  // Estado del modal de ayuda rapida (boton "?"). Carga el contenido la primera vez que se abre.
+  function ayudaModal() {
+    return {
+      open: false,
+      cargando: false,
+      secciones: [],
+      actualId: null,
+      get seccionActual() {
+        return this.secciones.find(s => s.id === this.actualId);
+      },
+      async abrir() {
+        this.open = true;
+        if (this.secciones.length === 0) {
+          this.cargando = true;
+          try {
+            const r = await fetch('/api/ayuda');
+            this.secciones = await r.json();
+            if (this.secciones.length) this.actualId = this.secciones[0].id;
+          } catch (e) {
+            console.error('Error cargando ayuda', e);
+            this.secciones = [];
+          } finally {
+            this.cargando = false;
+          }
+        }
+      }
+    };
+  }
+</script>
 </body>
 </html>

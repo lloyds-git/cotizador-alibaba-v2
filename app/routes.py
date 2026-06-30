@@ -1,3 +1,4 @@
+import threading
 from datetime import date
 from pathlib import Path
 from typing import Annotated
@@ -10,13 +11,16 @@ from sqlalchemy import func, Integer, case, cast
 from sqlalchemy.orm import Session
 
 from app import db as db_module
+from app import help_content
+from app import jobs
 from app.modelos import (
     Producto, Proveedor, ArancelOverride, Arancel, CostoAdicional,
     CotizacionSnapshot, Foto, Categoria, CategoriaKeyword, PatronDescarte,
-    UsuarioAutorizado,
+    UsuarioAutorizado, CompetidorListing,
 )
 from app.clasificador import clasificar_descripcion, invalidar_cache
 from app.ingest import (
+    buscar_proveedor_existente,
     cbm_desde_carton_dims,
     cbm_es_discrepante,
     pzas_40hq_desde_cbm_y_caja,
@@ -27,6 +31,13 @@ router = APIRouter()
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 SIN_CATEGORIA = "__sin_categoria__"  # sentinela en query string
+
+FAVICON_PATH = Path(__file__).parent / "favicon.ico"
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse(FAVICON_PATH)
 
 
 def get_db():
@@ -68,6 +79,10 @@ class ActualizarBody(BaseModel):
     gw_caja_kg: float | None = None
     lead_time: str | None = None
     item_type: str | None = None
+
+
+class RenombrarProveedorBody(BaseModel):
+    nombre: str
 
 
 class MarcarBulkBody(BaseModel):
@@ -123,6 +138,7 @@ def listar_productos(
                 "medidas": p.medidas,
                 "moq": p.moq,
                 "cbm": p.cbm,
+                "pzas_40hq": p.pzas_40hq,
                 "categoria": p.categoria,
                 "subcategoria": p.subcategoria,
                 "marcado_cotizar": p.marcado_cotizar,
@@ -287,22 +303,59 @@ MAX_PDF_BYTES = 50 * 1024 * 1024  # 50 MB
 EXTENSIONES_PDF = {".pdf"}
 
 
-@router.post("/api/ingest/pdf")
-async def ingestar_pdf(
-    db: SesionDep,
-    file: UploadFile = File(...),
-    forzar: bool = Form(False),
-):
-    """Sube un PDF de cotizacion y lo ingesta a la BD.
+def _worker_ingest_pdf(
+    job_id: str,
+    destino: Path,
+    fotos_destino: Path,
+    forzar: bool,
+) -> None:
+    """Corre la extraccion+ingest del PDF en un hilo aparte y guarda el
+    resultado en el registro de jobs.
 
-    Flujo: guarda el PDF en PDF_INGEST_DIR -> corre pdf_a_formato_hd.py
-    -> ingestar_xlsx_intermedio -> gate de calidad.
-
-    Si el gate veredicto es REINGESTAR y forzar=False, devuelve 422 con
-    motivo. El cliente puede reintentar con forzar=True.
+    Mapea el desenlace al mismo (http_status, body) que devolvia el endpoint
+    sincrono, para que el front aplique exactamente la misma logica:
+      - 200 + {ok:True}        -> exito
+      - 422 + {ok:False,...}   -> gate (VACIO / REINGESTAR)
+      - 500 + {detail:...}     -> fallo del pipeline o error inesperado
     """
     from app.pdf_pipeline import procesar_pdf, PdfPipelineError
 
+    # Sesion nueva propia del hilo (SQLite check_same_thread: se crea y usa
+    # toda dentro de este worker). procesar_pdf hace commit/rollback adentro.
+    SessionFactory = db_module.get_session_factory()
+    try:
+        with SessionFactory() as session:
+            try:
+                resultado = procesar_pdf(
+                    session=session,
+                    pdf_path=destino,
+                    fotos_destino=fotos_destino,
+                    forzar_calidad=forzar,
+                )
+            except PdfPipelineError as e:
+                jobs.marcar_listo(job_id, 500, {"detail": str(e)})
+                return
+            http_status = 200 if resultado.get("ok") else 422
+            jobs.marcar_listo(job_id, http_status, resultado)
+    except Exception as e:  # red de seguridad: nunca dejar el job colgado
+        jobs.marcar_listo(job_id, 500, {"detail": f"Error inesperado: {e}"})
+
+
+@router.post("/api/ingest/pdf", status_code=202)
+async def ingestar_pdf(
+    file: UploadFile = File(...),
+    forzar: bool = Form(False),
+):
+    """Sube un PDF de cotizacion y arranca su ingest en segundo plano.
+
+    Responde al instante (202) con un job_id; el procesamiento pesado
+    (pdf_a_formato_hd.py -> ingest -> gate de calidad) corre en un hilo aparte
+    para no toparse con el timeout de ~100s de Cloudflare (524). El cliente
+    consulta el avance en GET /api/ingest/pdf/status/{job_id}.
+
+    Validaciones rapidas (extension/tamano) y el guardado del PDF siguen siendo
+    sincronos: si fallan, devuelve 4xx aqui mismo.
+    """
     nombre_orig = file.filename or ""
     ext = Path(nombre_orig).suffix.lower()
     if ext not in EXTENSIONES_PDF:
@@ -338,20 +391,30 @@ async def ingestar_pdf(
     fotos_destino = proyecto / "data" / "fotos"
     fotos_destino.mkdir(parents=True, exist_ok=True)
 
-    try:
-        resultado = procesar_pdf(
-            session=db,
-            pdf_path=destino,
-            fotos_destino=fotos_destino,
-            forzar_calidad=forzar,
-        )
-    except PdfPipelineError as e:
-        raise HTTPException(500, str(e))
+    # Lanza el procesamiento en background y devuelve el job_id de inmediato.
+    job_id = jobs.crear_job(base)
+    hilo = threading.Thread(
+        target=_worker_ingest_pdf,
+        args=(job_id, destino, fotos_destino, forzar),
+        daemon=True,
+    )
+    hilo.start()
+    return {"job_id": job_id, "estado": "procesando", "archivo": base}
 
-    if not resultado.get("ok"):
-        # Gate REINGESTAR: 422 con motivo y bandera puede_forzar
-        return JSONResponse(status_code=422, content=resultado)
-    return resultado
+
+@router.get("/api/ingest/pdf/status/{job_id}")
+async def estado_ingest_pdf(job_id: str):
+    """Devuelve el estado de un job de ingest.
+
+    - 200 {estado:"procesando", elapsed:<seg>}  mientras corre.
+    - 200 {estado:"listo", http_status:<200|422|500>, resultado:{...}, elapsed}
+      cuando termina. El front aplica su logica usando http_status + resultado.
+    - 404 si el job_id no existe (p.ej. la app se reinicio).
+    """
+    job = jobs.obtener_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Job no encontrado (puede que el servidor se haya reiniciado).")
+    return job
 
 
 @router.post("/api/productos/{producto_id}/foto")
@@ -422,6 +485,66 @@ async def subir_foto(producto_id: int, db: SesionDep, file: UploadFile = File(..
         "id": nueva.id,
         "ruta_relativa": nueva.ruta_relativa,
         "url": f"/{nueva.ruta_relativa}",
+    }
+
+
+def _fusionar_proveedores(db: Session, origen: Proveedor, destino: Proveedor):
+    """Reasigna los productos de `origen` a `destino` y elimina `origen`.
+
+    El UniqueConstraint(proveedor_id, sku) impide mover un producto a `destino`
+    si este ya tiene uno con el mismo sku. Esos duplicados se descartan del
+    origen (reutilizando _borrar_productos_por_ids). Productos sin sku nunca
+    chocan y siempre se mueven. Devuelve (movidos, descartados).
+    """
+    sk_destino = {
+        sku for (sku,) in db.query(Producto.sku)
+        .filter(Producto.proveedor_id == destino.id).all()
+        if sku
+    }
+    movidos, a_descartar = 0, []
+    for p in db.query(Producto).filter(Producto.proveedor_id == origen.id).all():
+        if p.sku and p.sku in sk_destino:
+            a_descartar.append(p.id)          # duplicado de SKU -> se descarta
+        else:
+            p.proveedor_id = destino.id
+            if p.sku:
+                sk_destino.add(p.sku)
+            movidos += 1
+    descartados = _borrar_productos_por_ids(db, a_descartar) if a_descartar else 0
+    db.flush()
+    db.delete(origen)                          # proveedor origen ya vacio
+    return movidos, descartados
+
+
+@router.patch("/api/proveedores/{proveedor_id}")
+def renombrar_proveedor(
+    proveedor_id: int, body: RenombrarProveedorBody, db: SesionDep
+):
+    """Renombra un proveedor. Si el nuevo nombre matchea (matching tolerante)
+    a OTRO proveedor existente, fusiona: mueve los productos al existente y
+    elimina el duplicado."""
+    pv = db.get(Proveedor, proveedor_id)
+    if not pv:
+        raise HTTPException(404, "Proveedor no existe")
+    nuevo = (body.nombre or "").strip()[:200]
+    if not nuevo:
+        raise HTTPException(400, "Nombre vacio")
+
+    destino = buscar_proveedor_existente(db, nuevo)
+    if destino and destino.id != pv.id:
+        movidos, descartados = _fusionar_proveedores(db, origen=pv, destino=destino)
+        db.commit()
+        return {
+            "ok": True, "fusionado": True,
+            "proveedor_id": destino.id, "nombre": destino.nombre,
+            "movidos": movidos, "descartados": descartados,
+        }
+
+    pv.nombre = nuevo
+    db.commit()
+    return {
+        "ok": True, "fusionado": False,
+        "proveedor_id": pv.id, "nombre": pv.nombre,
     }
 
 
@@ -680,10 +803,44 @@ def cotizar_14_pasos(
     res = _replace(res, fraccion_arancelaria=arancel.fraccion)
 
     # Parametros pais para que el frontend pueda invertir el calculo
-    # (editar retail -> calcular margen efectivo)
-    from app.cotizador.defaults import country_params, DEFAULTS
-    cp = country_params(res.country_code)
+    # (editar retail -> calcular margen efectivo). Pasamos settings para que
+    # iva/descuentos reflejen los overrides de la barra (mismos valores que uso
+    # el motor en _calc_from_paso9), no los defaults.
+    from app.cotizador.defaults import country_params, tariff_params, DEFAULTS
+    cp = country_params(res.country_code, settings=settings)
     total_desc_pct = float(cp["descuentos_pct"]) + float(cp["descuentos_na_pct"]) + float(cp["gasto_fijo_pct"])
+
+    # Valores conocidos que entraron a cada paso, para mostrarlos entre
+    # parentesis junto al label (ej. "x piezas por contenedor (150 pzas)").
+    # piezas se deriva del propio resultado (paso3 = paso2 x piezas) para
+    # reflejar tanto el override como el valor derivado de carton_qty + cbm.
+    def _g(x):  # 25.0 -> "25", 1.15 -> "1.15", sin ceros sobrantes
+        return f"{float(x):g}"
+
+    mult = tariff_params(res.tasa_arancelaria_pct)["multiplicador_arancelario"]
+    piezas_usadas = (
+        int((res.paso3 / res.paso2).to_integral_value())
+        if res.paso2 and res.paso2 != 0 else None
+    )
+    _pzas = f"{piezas_usadas:,}" if piezas_usadas else ""
+    flete_mar = flete_maritimo_usd if flete_maritimo_usd is not None else DEFAULTS["flete_maritimo_usd"]
+    ga_pct = settings.get("gastos_aduanales_pct", DEFAULTS["gastos_aduanales_pct"])
+    paso_notas = {
+        2: f"{float(mult):.2f}",
+        3: f"{_pzas} pzas" if _pzas else "",
+        4: f"${float(flete_mar):,.0f}",
+        5: f"{_g(res.tasa_arancelaria_pct)}% + DTA {_g(DEFAULTS['dta_pct'])}%",
+        6: f"{_g(ga_pct)}%",
+        7: f"{float(res.tipo_cambio):.2f}",
+        8: f"${float(settings['flete_local_mxn']):,.0f}",
+        9: f"÷ {_pzas} pzas" if _pzas else "",
+        10: f"{_g(total_desc_pct)}%",
+        11: f"{_g(res.margen_nuestro_effective)}%",
+        12: f"{_g(res.margen_cliente_effective)}%",
+        13: f"IVA {_g(cp['iva_pct'])}%",
+    }
+    if suma_costos > 0:
+        paso_notas[1] = f"FOB ${float(fob_original):,.2f} + costos ${float(suma_costos):,.2f}"
 
     return {
         "producto_id": producto_id,
@@ -727,6 +884,7 @@ def cotizar_14_pasos(
                 "n": i,
                 "label": STEP_LABELS[i - 1],
                 "valor": str(getattr(res, f"paso{i}")),
+                "nota": paso_notas.get(i, ""),
             }
             for i in range(1, 15)
         ],
@@ -1778,6 +1936,155 @@ def borrar_costo(producto_id: int, costo_id: int, db: SesionDep):
     return {"ok": True}
 
 
+# ============================================================
+# Competencia: busqueda en Amazon MX / Mercado Libre MX (Claude web_search)
+# ============================================================
+
+
+class CompetenciaBuscarBody(BaseModel):
+    query: str | None = None
+    marketplaces: list[str] | None = None
+
+
+class CompetidorItem(BaseModel):
+    marketplace: str
+    titulo: str
+    precio_mxn: float | None = None
+    rating: float | None = None
+    num_reviews: int | None = None
+    vendedor: str | None = None
+    url: str
+    imagen_url: str | None = None
+    notas: str | None = None
+
+
+class CompetenciaGuardarBody(BaseModel):
+    items: list[CompetidorItem]
+    query: str | None = None
+
+
+def _competidor_to_dict(c: CompetidorListing) -> dict:
+    return {
+        "id": c.id,
+        "producto_id": c.producto_id,
+        "marketplace": c.marketplace,
+        "titulo": c.titulo,
+        "precio_mxn": c.precio_mxn,
+        "rating": c.rating,
+        "num_reviews": c.num_reviews,
+        "vendedor": c.vendedor,
+        "url": c.url,
+        "imagen_url": c.imagen_url,
+        "busqueda_query": c.busqueda_query,
+        "notas": c.notas,
+        "creado_en": c.creado_en.isoformat() if c.creado_en else None,
+    }
+
+
+def _stats_precios(items: list[CompetidorListing]) -> dict | None:
+    precios = [c.precio_mxn for c in items if c.precio_mxn and c.precio_mxn > 0]
+    if not precios:
+        return {"n": len(items), "min": None, "prom": None, "max": None}
+    return {
+        "n": len(items),
+        "min": min(precios),
+        "prom": sum(precios) / len(precios),
+        "max": max(precios),
+    }
+
+
+def _resumen_competencia(items: list[CompetidorListing]) -> dict:
+    amazon = [c for c in items if c.marketplace == "amazon_mx"]
+    meli = [c for c in items if c.marketplace == "mercadolibre_mx"]
+    petco = [c for c in items if c.marketplace == "petco_mx"]
+    return {
+        "amazon_mx": _stats_precios(amazon),
+        "mercadolibre_mx": _stats_precios(meli),
+        "petco_mx": _stats_precios(petco),
+        "global": _stats_precios(items),
+    }
+
+
+@router.post("/api/productos/{producto_id}/competencia/buscar")
+def buscar_competencia(producto_id: int, body: CompetenciaBuscarBody, db: SesionDep):
+    """Busca candidatos de competencia via Claude web_search. NO persiste."""
+    from app import competencia
+
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+    query = (body.query or "").strip() or competencia.construir_query(p)
+    return competencia.buscar_candidatos(query, body.marketplaces)
+
+
+@router.get("/api/productos/{producto_id}/competencia")
+def listar_competencia(producto_id: int, db: SesionDep):
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+    items = (
+        db.query(CompetidorListing)
+        .filter_by(producto_id=producto_id)
+        .order_by(CompetidorListing.marketplace, CompetidorListing.precio_mxn)
+        .all()
+    )
+    return {
+        "items": [_competidor_to_dict(c) for c in items],
+        "resumen": _resumen_competencia(items),
+    }
+
+
+@router.post("/api/productos/{producto_id}/competencia")
+def guardar_competencia(producto_id: int, body: CompetenciaGuardarBody, db: SesionDep):
+    """Persiste los listings confirmados por el usuario."""
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+    if not body.items:
+        raise HTTPException(400, "Sin items para guardar")
+    guardados = []
+    for it in body.items:
+        c = CompetidorListing(
+            producto_id=producto_id,
+            marketplace=it.marketplace,
+            titulo=it.titulo,
+            precio_mxn=it.precio_mxn,
+            rating=it.rating,
+            num_reviews=it.num_reviews,
+            vendedor=it.vendedor,
+            url=it.url,
+            imagen_url=it.imagen_url,
+            busqueda_query=(body.query or None),
+            notas=(it.notas or None),
+        )
+        db.add(c)
+        guardados.append(c)
+    db.commit()
+    for c in guardados:
+        db.refresh(c)
+    items = (
+        db.query(CompetidorListing)
+        .filter_by(producto_id=producto_id)
+        .order_by(CompetidorListing.marketplace, CompetidorListing.precio_mxn)
+        .all()
+    )
+    return {
+        "items": [_competidor_to_dict(c) for c in items],
+        "resumen": _resumen_competencia(items),
+        "guardados": len(guardados),
+    }
+
+
+@router.delete("/api/productos/{producto_id}/competencia/{listing_id}")
+def borrar_competidor(producto_id: int, listing_id: int, db: SesionDep):
+    c = db.get(CompetidorListing, listing_id)
+    if not c or c.producto_id != producto_id:
+        raise HTTPException(404, "Listing no existe")
+    db.delete(c)
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/api/cotizaciones")
 def listar_cotizaciones_global(
     db: SesionDep,
@@ -2193,3 +2500,14 @@ def borrar_usuario(usuario_id: int, request: Request, db: SesionDep):
 @router.get("/usuarios", response_class=HTMLResponse)
 def pagina_usuarios(request: Request, db: SesionDep):
     return TEMPLATES.TemplateResponse(request, "usuarios.html", {})
+
+
+@router.get("/api/ayuda")
+def api_ayuda():
+    """Contenido del manual de usuario (Markdown) para la pagina /ayuda y el modal '?'."""
+    return help_content.cargar_ayuda()
+
+
+@router.get("/ayuda", response_class=HTMLResponse)
+def pagina_ayuda(request: Request):
+    return TEMPLATES.TemplateResponse(request, "ayuda.html", {})

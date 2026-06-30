@@ -214,6 +214,52 @@ Tu tarea: identificar (a) el PROVEEDOR (seller) que emite la cotizacion y
 (b) CADA PRODUCTO distinto del catalogo/cotizacion. Devolver todo como JSON.
 
 REGLAS:
+
+REGLA CRITICA - FORMATO "PI CHINO" (frecuente en Hangzhou/Foshan/Shenzhen/Ningbo).
+Mira los HEADERS de la tabla principal. Si ves columnas tipo:
+  "Cantidad" (o "Cant idad/piezas")
+  "Volumen Total (m³)" (a veces combinada con peso: "Volumen Total / Peso bruto")
+entonces ESOS VALORES SON TOTALES DEL PEDIDO COMPLETO, no per-carton.
+
+Ejemplo anti-pattern (ESTO ES INCORRECTO, NO LO HAGAS):
+  PDF dice: Cantidad=500, Volumen Total="69 CBM / 5,750 kg", Peso bruto=11.5 kg
+  Mapeo INCORRECTO: moq="500 pcs", cbm=69, nw_caja_kg=5750, peso_kg=11.5
+  Por que es incorrecto: 5750 kg NO cabe en una caja; 69 m³ es un contenedor entero.
+
+Mapeo CORRECTO (caso A — producto grande, 1 pza por caja):
+  pzas_caja = 1 (producto >40 cm Y packing "Caja de carton kraft" sin numero)
+  peso_kg   = 11.5 (la columna "Peso bruto" separada suele ser per-unit)
+  cbm       = Volumen_Total / num_cartones = 69 / (500/1) = 0.138
+  pzas_40hq = 500  (porque Volumen Total entre 55-75 m³ = pedido llena 1x40HQ)
+  pzas_20ft = Cantidad (si Volumen Total entre 25-35 m³)
+  moq, nw_caja_kg, gw_caja_kg: OMITELOS. No hay columnas per-carton explicitas.
+
+Caso B — producto chico, varias piezas por caja (ej. juguetes):
+  PDF dice: Cantidad=1000, Volumen Total="5 CBM/600 kg", Peso bruto=0.43 kg,
+            Carton dims="31x31x4.6 cm" (=> 0.044 m³ por caja aprox)
+  num_cartones = Cantidad / pzas_caja  (= 1000 / 20 = 50 cartones)
+  cbm = Volumen_Total / num_cartones (= 5 / 50 = 0.1)  [NO uses Vol/Cantidad
+        cuando pzas_caja > 1; eso te da CBM por pieza, no por caja]
+  pzas_40hq = OMITIR cuando Volumen Total < 50 m³ (el pedido no llena un
+              contenedor; el sistema derivara pzas_40hq despues con cbm+
+              pzas_caja). NO uses "Cantidad" como pzas_40hq en este caso.
+  pzas_caja: del campo "Packing" si dice tipo "20 pzas/caja" o de Carton
+             dims si calza; sino, dejar vacio.
+  peso_kg = 0.43 (per-unit)
+  moq, nw_caja_kg, gw_caja_kg: OMITELOS si no hay columna explicita.
+
+MOQ: solo lo poblas si hay un header EXPLICITO "MOQ", "Min Order" o
+"Minimum Order Quantity". La columna "Cantidad" / "Cant idad" en estos PDFs
+es el tamano del pedido, NO el MOQ. Si no hay header MOQ, deja moq="".
+
+NW/GW caja: solo lo poblas si hay un header EXPLICITO "N.W.", "G.W.",
+"Net Weight", "Gross Weight" referente al CARTON master. NO uses el segundo
+numero de "Volumen Total" (eso es kg totales del pedido). NO uses peso_kg
+como gw_caja_kg.
+
+Si NO ves columnas "Cantidad" + "Volumen Total" como columnas separadas, este
+caso no aplica: usa las reglas normales abajo.
+
 1. PROVEEDOR (seller): es la empresa que VENDE/emite la cotizacion. Suele
    aparecer como "Seller", "Vendor", "From", o como company name en el
    encabezado. NO confundas con "Buyer" (comprador, ej: Fortuna Abadi).
@@ -498,6 +544,17 @@ Te paso N imagenes correspondientes a las paginas (ordenadas) de una cotizacion.
 
 5. Si la cotizacion lista variantes del mismo modelo (ej. mismo SKU con tallas
    S/M/L o colores), genera UNA FILA POR VARIANTE con SKU diferenciado.
+
+6. FORMATO "PI CHINO" (Hangzhou/Foshan/Shenzhen/Ningbo). Si la tabla tiene
+   columnas "Cantidad" + "Volumen Total (m³)" + "Peso bruto" como columnas
+   SEPARADAS, esos valores son TOTALES DEL PEDIDO, NO per-carton. Ejemplo:
+     PDF: Cantidad=500, Volumen Total="69 CBM/5,750 kg", Peso bruto=11.5 kg
+     MAL: moq="500 pcs", cbm=69, nw_caja_kg=5750
+     BIEN: pzas_40hq=500 (cuando V.T. entre 55-75 m³), peso_kg=11.5,
+           cbm=0.138 (=69/500 si pzas_caja=1), pzas_caja=1 (si producto
+           mide >40 cm y packing dice "Caja de carton kraft"), nw_caja_kg
+           y gw_caja_kg OMITIDOS (no inventes dividiendo totales).
+   Si Volumen Total esta entre 25-35 m³ usar pzas_20ft en vez de pzas_40hq.
 
 DEVUELVE UN SOLO JSON VALIDO con esta forma exacta (sin texto antes ni despues, sin ```):
 {

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Ayuda - Mascotas BD{% endblock %}
+{% block content %}
+<div x-data="ayudaPage()" x-init="cargar()">
+  <h1 class="text-2xl font-bold mb-4">Ayuda</h1>
+
+  <template x-if="cargando">
+    <p class="text-gray-500">Cargando manual…</p>
+  </template>
+
+  <template x-if="!cargando && secciones.length === 0">
+    <p class="text-red-600">No se pudo cargar el contenido de la ayuda.</p>
+  </template>
+
+  <div class="flex gap-6" x-show="secciones.length > 0">
+    <!-- Indice lateral (TOC) -->
+    <aside class="w-60 shrink-0">
+      <nav class="sticky top-6 bg-white rounded shadow p-3 text-sm">
+        <p class="font-semibold text-gray-500 uppercase text-[10px] mb-2">Temas</p>
+        <template x-for="s in secciones" :key="s.id">
+          <a :href="'#' + s.id"
+             class="block py-1 px-2 rounded hover:bg-blue-50 hover:text-blue-700"
+             x-text="s.titulo"></a>
+        </template>
+      </nav>
+    </aside>
+
+    <!-- Contenido -->
+    <div class="flex-1 min-w-0">
+      <template x-for="s in secciones" :key="s.id">
+        <section :id="s.id"
+                 class="md-content bg-white rounded shadow p-6 mb-6 scroll-mt-6"
+                 x-html="renderMarkdown(s.markdown)"></section>
+      </template>
+    </div>
+  </div>
+</div>
+
+<script>
+function ayudaPage() {
+  return {
+    secciones: [],
+    cargando: true,
+    async cargar() {
+      try {
+        const r = await fetch('/api/ayuda');
+        this.secciones = await r.json();
+      } catch (e) {
+        console.error('Error cargando ayuda', e);
+        this.secciones = [];
+      } finally {
+        this.cargando = false;
+      }
+    }
+  };
+}
+</script>
+{% endblock %}
