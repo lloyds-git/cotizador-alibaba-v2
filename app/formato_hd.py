@@ -382,12 +382,17 @@ def llenar_formato_hd(
     template_xlsx: str,
     archivo_salida: str,
     mapeo_datos: dict[int, int],
+    constantes: dict[int, str] | None = None,
 ) -> int:
     """Rellena el template HD (xlsx) con los productos del xlsx intermedio.
 
     Escribe una columna por producto (C, D, E, ...): CONSTANTES + datos mapeados
     + MPT-XXXX (fila 9) + foto (fila 2). Devuelve el numero de productos escritos.
+
+    `constantes` permite sobreescribir CONSTANTES (ej. Vendor Name/Number por
+    proyecto). Si es None se usa el CONSTANTES del modulo.
     """
+    consts = CONSTANTES if constantes is None else constantes
     with tempfile.TemporaryDirectory() as tmpdir:
         in_cell = extraer_imagenes_in_cell(archivo_origen, tmpdir)
         flotantes = extraer_imagenes_drawing(archivo_origen, tmpdir)
@@ -418,7 +423,7 @@ def llenar_formato_hd(
             letra = openpyxl.utils.get_column_letter(col_dest)
             ws_d.column_dimensions[letra].width = ANCHO_COL_CHARS
 
-            for fila_dest, valor in CONSTANTES.items():
+            for fila_dest, valor in consts.items():
                 ws_d.cell(row=fila_dest, column=col_dest, value=valor)
             ws_d.cell(row=9, column=col_dest, value=f"MPT-{i + 1:04d}")
             for col_origen, fila_dest in mapeo_datos.items():

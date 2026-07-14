@@ -104,10 +104,32 @@ def init_proyecto_db(slug: str | None = None) -> None:
     Base.metadata.create_all(get_engine(ruta_bd_proyecto(slug)))
 
 
+def _migrar_columnas_proyecto(engine) -> None:
+    """Migracion ligera (no hay Alembic): agrega columnas nuevas a 'proyectos'.
+
+    create_all NO altera tablas ya existentes, asi que las columnas agregadas
+    despues del primer arranque hay que anadirlas a mano. SQLite aplica el
+    DEFAULT a las filas existentes al hacer ADD COLUMN.
+    """
+    nuevas = {
+        "vendor_hd": "VARCHAR(200) DEFAULT 'Totikay Pets SA de CV'",
+        "vendor_num_hd": "VARCHAR(100) DEFAULT 'TBD'",
+    }
+    with engine.begin() as conn:
+        existentes = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(proyectos)")
+        }
+        for col, ddl in nuevas.items():
+            if col not in existentes:
+                conn.exec_driver_sql(f"ALTER TABLE proyectos ADD COLUMN {col} {ddl}")
+
+
 def init_sistema_db() -> None:
     """Crea las tablas de sistema (usuarios_autorizados, proyectos) si faltan."""
     SISTEMA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SistemaBase.metadata.create_all(get_engine(SISTEMA_PATH))
+    engine = get_engine(SISTEMA_PATH)
+    SistemaBase.metadata.create_all(engine)
+    _migrar_columnas_proyecto(engine)
 
 
 # Compat: mantiene funcionando a los scripts/tests que hacen

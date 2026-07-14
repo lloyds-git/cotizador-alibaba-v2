@@ -44,6 +44,8 @@ def _proyecto_a_dict(p: Proyecto) -> dict:
         "activo": p.activo,
         "creado_en": p.creado_en.isoformat() if p.creado_en else None,
         "ultimo_uso": p.ultimo_uso.isoformat() if p.ultimo_uso else None,
+        "vendor_hd": p.vendor_hd or "Totikay Pets SA de CV",
+        "vendor_num_hd": p.vendor_num_hd or "TBD",
     }
 
 
@@ -104,6 +106,25 @@ def crear_proyecto_endpoint(
     db.commit()
     request.session["proyecto"] = slug
     return RedirectResponse(url="/", status_code=302)
+
+
+@router.post("/proyectos/{slug}/vendor")
+def actualizar_vendor_hd(
+    slug: str,
+    db: SistemaDep,
+    vendor_hd: str = Form(""),
+    vendor_num_hd: str = Form(""),
+):
+    """Actualiza Vendor Name (fila 3) / Vendor Number (fila 4) del formato HD
+    para un proyecto. Vacio -> vuelve al default historico."""
+    slug = _validar_slug(slug)
+    p = db.query(Proyecto).filter_by(slug=slug).first()
+    if p is None:
+        raise HTTPException(404, f"Proyecto '{slug}' no existe")
+    p.vendor_hd = vendor_hd.strip() or "Totikay Pets SA de CV"
+    p.vendor_num_hd = vendor_num_hd.strip() or "TBD"
+    db.commit()
+    return RedirectResponse(url="/proyectos", status_code=302)
 
 
 @router.post("/proyectos/seleccionar")

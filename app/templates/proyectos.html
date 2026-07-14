@@ -21,24 +21,51 @@
     {% if proyectos %}
       <ul class="divide-y">
         {% for p in proyectos %}
-          <li class="py-2 flex items-center justify-between">
-            <div>
-              <span class="font-medium">{{ p.nombre }}</span>
-              <span class="text-xs text-gray-500 font-mono ml-2">{{ p.slug }}</span>
-              {% if not p.activo %}
-                <span class="text-xs text-red-500 ml-2">(inactivo)</span>
+          <li class="py-2">
+            <div class="flex items-center justify-between">
+              <div>
+                <span class="font-medium">{{ p.nombre }}</span>
+                <span class="text-xs text-gray-500 font-mono ml-2">{{ p.slug }}</span>
+                {% if not p.activo %}
+                  <span class="text-xs text-red-500 ml-2">(inactivo)</span>
+                {% endif %}
+              </div>
+              {% if p.activo %}
+                <form method="post" action="/proyectos/seleccionar">
+                  <input type="hidden" name="slug" value="{{ p.slug }}">
+                  <button type="submit"
+                          class="text-sm px-3 py-1 rounded {{ 'bg-gray-200 text-gray-600' if p.slug == activo else 'bg-blue-600 hover:bg-blue-700 text-white' }}"
+                          {{ 'disabled' if p.slug == activo else '' }}>
+                    {{ 'Activo' if p.slug == activo else 'Usar' }}
+                  </button>
+                </form>
               {% endif %}
             </div>
-            {% if p.activo %}
-              <form method="post" action="/proyectos/seleccionar">
-                <input type="hidden" name="slug" value="{{ p.slug }}">
-                <button type="submit"
-                        class="text-sm px-3 py-1 rounded {{ 'bg-gray-200 text-gray-600' if p.slug == activo else 'bg-blue-600 hover:bg-blue-700 text-white' }}"
-                        {{ 'disabled' if p.slug == activo else '' }}>
-                  {{ 'Activo' if p.slug == activo else 'Usar' }}
-                </button>
+            <details class="mt-1">
+              <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-700 select-none">
+                🏷️ Vendor del formato HD
+              </summary>
+              <form method="post" action="/proyectos/{{ p.slug }}/vendor"
+                    class="grid grid-cols-2 gap-2 text-sm mt-2 items-end bg-gray-50 p-2 rounded">
+                <label>Vendor Name <span class="text-gray-400">(fila 3)</span>:
+                  <input type="text" name="vendor_hd" value="{{ p.vendor_hd }}"
+                         class="border rounded px-2 py-1 w-full mt-1">
+                </label>
+                <label>Vendor Number <span class="text-gray-400">(fila 4)</span>:
+                  <input type="text" name="vendor_num_hd" value="{{ p.vendor_num_hd }}"
+                         class="border rounded px-2 py-1 w-full mt-1 font-mono">
+                </label>
+                <div class="col-span-2">
+                  <button type="submit"
+                          class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm">
+                    Guardar vendor
+                  </button>
+                  <span class="text-xs text-gray-500 ml-2">
+                    Se usa como Vendor Name/Number al exportar el formato HD de este proyecto.
+                  </span>
+                </div>
               </form>
-            {% endif %}
+            </details>
           </li>
         {% endfor %}
       </ul>

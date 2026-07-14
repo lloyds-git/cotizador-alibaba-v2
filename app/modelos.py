@@ -350,3 +350,8 @@ class Proyecto(SistemaBase):
     activo = Column(Boolean, default=True, nullable=False)
     creado_en = Column(DateTime, default=datetime.utcnow)
     ultimo_uso = Column(DateTime)
+    # Datos del vendor para el formato HD (fila 3 = Vendor Name, fila 4 = Vendor
+    # Number). Configurables por proyecto desde la pagina de Proyectos; el default
+    # conserva los valores historicos para no cambiar los proyectos existentes.
+    vendor_hd = Column(String(200), default="Totikay Pets SA de CV")
+    vendor_num_hd = Column(String(100), default="TBD")

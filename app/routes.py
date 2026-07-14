@@ -16,7 +16,7 @@ from app import jobs
 from app.modelos import (
     Producto, Proveedor, ArancelOverride, Arancel, CostoAdicional,
     CotizacionSnapshot, Foto, Categoria, CategoriaKeyword, PatronDescarte,
-    UsuarioAutorizado, CompetidorListing,
+    UsuarioAutorizado, CompetidorListing, Proyecto,
 )
 from app.clasificador import clasificar_descripcion, invalidar_cache
 from app.ingest import (
@@ -1259,6 +1259,23 @@ def home(request: Request, db: SesionDep):
     )
 
 
+def _vendor_hd_proyecto(slug: str) -> tuple[str, str]:
+    """(Vendor Name, Vendor Number) del proyecto para el formato HD (fila 3/4).
+
+    Vive en el registro del proyecto (sistema.db). Si falta, usa el default
+    historico para no cambiar el comportamiento previo.
+    """
+    p = db_module.get_sistema_session_factory()()
+    try:
+        proy = p.query(Proyecto).filter_by(slug=slug).first()
+        if proy:
+            return (proy.vendor_hd or "Totikay Pets SA de CV",
+                    proy.vendor_num_hd or "TBD")
+    finally:
+        p.close()
+    return ("Totikay Pets SA de CV", "TBD")
+
+
 def _correr_llenar_formato_hd(
     db: Session,
     xlsx_int: Path,
@@ -1266,6 +1283,8 @@ def _correr_llenar_formato_hd(
     base_fotos: str,
     categoria: str | None = "__usar_marcados__",
     params: dict | None = None,
+    vendor_hd: str = "Totikay Pets SA de CV",
+    vendor_num_hd: str = "TBD",
 ) -> Path:
     """Genera intermedio (por marcas o por categoria) + corre llenar_formato_hd.py.
 
@@ -1331,11 +1350,13 @@ def _correr_llenar_formato_hd(
     if _sys.platform == "win32":
         # --- Windows: Excel via COM (llenar_formato_hd.py) ---
         script = proyecto / "llenar_formato_hd.py"
-        # Replicar el naming de llenar_formato_hd.construir_nombre_salida().
+        # Replicar el naming de llenar_formato_hd.construir_nombre_salida():
+        # escribe formato-hd-<base>.xlsx JUNTO al intermedio (xlsx_int.parent),
+        # que es la carpeta de exports del proyecto, no la raiz del repo.
         base_salida = xlsx_int.stem.lower()
         if base_salida.startswith("_intermedio_"):
             base_salida = base_salida[len("_intermedio_"):]
-        salida_default = proyecto / f"formato-hd-{base_salida}.xlsx"
+        salida_default = xlsx_int.parent / f"formato-hd-{base_salida}.xlsx"
         for p in {salida, salida_default}:
             if p.exists():
                 try:
@@ -1347,7 +1368,8 @@ def _correr_llenar_formato_hd(
                     )
         result = subprocess.run(
             [_sys.executable, str(script), str(xlsx_int), str(formato),
-             "--mapeo", MAPEO_HD, "--yes"],
+             "--mapeo", MAPEO_HD, "--yes",
+             "--vendor", vendor_hd, "--vendor-num", vendor_num_hd],
             capture_output=True, text=True, cwd=str(proyecto),
             stdin=subprocess.DEVNULL,
         )
@@ -1381,6 +1403,7 @@ def _correr_llenar_formato_hd(
         formato_hd.llenar_formato_hd(
             str(xlsx_int), str(template_xlsx), str(salida),
             formato_hd.parsear_mapeo(MAPEO_HD),
+            constantes={**formato_hd.CONSTANTES, 3: vendor_hd, 4: vendor_num_hd},
         )
     except Exception as e:
         raise HTTPException(500, f"Fallo el llenado del formato HD: {e}")
@@ -1480,9 +1503,13 @@ def exportar(
     exports = db_module.exports_dir_proyecto(slug)
     exports.mkdir(parents=True, exist_ok=True)
     xlsx_int = exports / "_intermedio_seleccion.xlsx"
-    salida = exports / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
+    # Nombre limpio: construir_nombre_salida() quita el prefijo "_intermedio_",
+    # asi salida coincide con lo que escribe el script (formato-hd-seleccion.xlsx).
+    salida = exports / "formato-hd-seleccion.xlsx"
+    vendor_hd, vendor_num_hd = _vendor_hd_proyecto(slug)
     archivo = _correr_llenar_formato_hd(
-        db, xlsx_int, salida, _base_fotos(slug), params=params
+        db, xlsx_int, salida, _base_fotos(slug), params=params,
+        vendor_hd=vendor_hd, vendor_num_hd=vendor_num_hd,
     )
     # Snapshot por cada producto marcado
     _snapshot_productos_exportados(
@@ -1569,8 +1596,10 @@ def exportar_categoria(
 
     # Pasamos categoria=None si el cliente uso el sentinela __sin_categoria__
     cat_filter = None if categoria == SIN_CATEGORIA else categoria
+    vendor_hd, vendor_num_hd = _vendor_hd_proyecto(slug)
     archivo = _correr_llenar_formato_hd(
-        db, xlsx_int, salida, _base_fotos(slug), categoria=cat_filter, params=params
+        db, xlsx_int, salida, _base_fotos(slug), categoria=cat_filter, params=params,
+        vendor_hd=vendor_hd, vendor_num_hd=vendor_num_hd,
     )
     # Snapshot por cada producto exportado en la categoria
     _snapshot_productos_exportados(

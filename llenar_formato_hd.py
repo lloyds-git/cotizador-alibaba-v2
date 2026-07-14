@@ -389,7 +389,9 @@ def llenar_formato(
     archivo_formato: str,
     archivo_salida: str,
     mapeo_datos: dict[int, int],
+    constantes: dict[int, str] | None = None,
 ) -> int:
+    consts = CONSTANTES if constantes is None else constantes
     pythoncom.CoInitialize()
     excel = win32com.client.DispatchEx("Excel.Application")
     excel.Visible = False
@@ -456,7 +458,7 @@ def llenar_formato(
                 col_dest = 3 + i  # C=3, D=4, ...
 
                 # Constantes
-                for fila_dest, valor in CONSTANTES.items():
+                for fila_dest, valor in consts.items():
                     ws_dest.Cells(fila_dest, col_dest).Value = valor
 
                 # MPT-XXXX (autoincremental empezando en 0001)
@@ -578,6 +580,21 @@ def main() -> None:
     if "--yes" in args:
         args.remove("--yes")
         auto_yes = True
+    # --vendor / --vendor-num: override de Vendor Name (fila 3) y Vendor Number
+    # (fila 4) por proyecto. La app los pasa desde el registro del proyecto.
+    vendor = vendor_num = None
+    if "--vendor" in args:
+        idx = args.index("--vendor")
+        if idx + 1 >= len(args):
+            sys.exit("Falta el valor despues de --vendor")
+        vendor = args[idx + 1]
+        del args[idx:idx + 2]
+    if "--vendor-num" in args:
+        idx = args.index("--vendor-num")
+        if idx + 1 >= len(args):
+            sys.exit("Falta el valor despues de --vendor-num")
+        vendor_num = args[idx + 1]
+        del args[idx:idx + 2]
     if "--mapeo" in args:
         idx = args.index("--mapeo")
         if idx + 1 >= len(args):
@@ -619,8 +636,14 @@ def main() -> None:
     else:
         confirmar_sobreescritura(archivo_salida)
 
+    consts = dict(CONSTANTES)
+    if vendor:
+        consts[3] = vendor
+    if vendor_num:
+        consts[4] = vendor_num
+
     print(f"Mapeo aplicado: {mapeo_datos}")
-    n = llenar_formato(archivo_origen, archivo_formato, archivo_salida, mapeo_datos)
+    n = llenar_formato(archivo_origen, archivo_formato, archivo_salida, mapeo_datos, consts)
     print(f"Listo. {n} productos escritos en: {archivo_salida}")
 
 
