@@ -6,9 +6,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencias del sistema mínimas (openpyxl es puro Python, no requiere libs nativas)
+# Dependencias del sistema:
+#  - curl: healthcheck.
+#  - libreoffice-calc: convierte el template HD .xlsb -> .xlsx en Linux
+#    (openpyxl no lee .xlsb). La exportacion HD lo usa via app/formato_hd.py.
+#    En Windows no aplica (ese entorno usa Excel COM).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl libreoffice-calc \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalación de dependencias Python

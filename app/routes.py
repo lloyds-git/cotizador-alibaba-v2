@@ -1313,56 +1313,72 @@ def _correr_llenar_formato_hd(
 
     formato_env = os.environ.get("FORMATO_HD_PATH")
     formato = Path(formato_env) if formato_env else proyecto / "Pet Quote Sheet 2026.xlsb"
-    script = proyecto / "llenar_formato_hd.py"
 
-    # Replicar la logica de naming de llenar_formato_hd.construir_nombre_salida():
-    # toma stem del intermedio en minusculas y quita el prefijo '_intermedio_'.
-    base_salida = xlsx_int.stem.lower()
-    if base_salida.startswith("_intermedio_"):
-        base_salida = base_salida[len("_intermedio_"):]
-    salida_default = proyecto / f"formato-hd-{base_salida}.xlsx"
+    # Mapeo intermedio (18 cols) -> filas del HD destino. Fuente unica para ambas
+    # rutas (Windows COM / Linux openpyxl):
+    #   col B (SKU)->fila 5, C (Desc)->8, H (MOQ)->12, M (Pzas 40hq)->15,
+    #   O (Venta HD)->11, P (Retail MXN)->16, Q (Margen)->17.
+    # Fila 4 (Vendor Number) queda "TBD" via CONSTANTES; el proveedor (R) no se mapea.
+    MAPEO_HD = "B=5,C=8,H=12,M=15,O=11,P=16,Q=17"
 
-    # Borrar todas las salidas posibles previas (default + custom + variantes)
-    for p in {salida, salida_default}:
-        if p.exists():
-            try:
-                p.unlink()
-            except PermissionError:
-                raise HTTPException(
-                    500,
-                    f"No puedo borrar el archivo anterior (esta abierto en Excel?): {p.name}",
-                )
+    if _sys.platform == "win32":
+        # --- Windows: Excel via COM (llenar_formato_hd.py) ---
+        script = proyecto / "llenar_formato_hd.py"
+        # Replicar el naming de llenar_formato_hd.construir_nombre_salida().
+        base_salida = xlsx_int.stem.lower()
+        if base_salida.startswith("_intermedio_"):
+            base_salida = base_salida[len("_intermedio_"):]
+        salida_default = proyecto / f"formato-hd-{base_salida}.xlsx"
+        for p in {salida, salida_default}:
+            if p.exists():
+                try:
+                    p.unlink()
+                except PermissionError:
+                    raise HTTPException(
+                        500,
+                        f"No puedo borrar el archivo anterior (esta abierto en Excel?): {p.name}",
+                    )
+        result = subprocess.run(
+            [_sys.executable, str(script), str(xlsx_int), str(formato),
+             "--mapeo", MAPEO_HD, "--yes"],
+            capture_output=True, text=True, cwd=str(proyecto),
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode != 0:
+            raise HTTPException(500, f"Fallo llenar_formato_hd: {result.stderr[:500]}")
+        if not salida_default.exists():
+            raise HTTPException(500, f"No encontre el archivo de salida: {salida_default.name}")
+        if salida_default != salida:
+            salida_default.replace(salida)
+        return salida
 
-    # El intermedio de exportar.py tiene 18 columnas (Foto=A, SKU=B, Descripcion=C,
-    # ..., Margen Lloyds=Q, Proveedor=R).
-    # El default de llenar_formato_hd.py asume el layout viejo (22 cols), por
-    # eso forzamos el mapeo.
-    result = subprocess.run(
-        [
-            _sys.executable, str(script), str(xlsx_int), str(formato),
-            # Mapeo correcto al HD destino:
-            #   col B (SKU)         -> fila 5  (SKU (# or TBD))
-            #   col C (Descripcion) -> fila 8  (DESCRIPTION)
-            #   col H (MOQ)         -> fila 12 (MOQ Domestic)
-            #   col M (Pzas 40hq)   -> fila 15 (Pieces per Container)
-            #   col O (Venta HD)    -> fila 11 (DOMESTIC COST)
-            #   col P (Retail MXN)  -> fila 16 (SUGGESTED RETAIL)
-            #   col Q (Margen)      -> fila 17 (THD MARGIN)
-            # Fila 4 (Vendor Number) se deja en "TBD" via CONSTANTES,
-            # no se mapea el proveedor (R) al HD.
-            "--mapeo", "B=5,C=8,H=12,M=15,O=11,P=16,Q=17", "--yes",
-        ],
-        capture_output=True, text=True, cwd=str(proyecto),
-        stdin=subprocess.DEVNULL,
-    )
-    if result.returncode != 0:
-        raise HTTPException(500, f"Fallo llenar_formato_hd: {result.stderr[:500]}")
-
-    # llenar_formato_hd.py escribe a salida_default; si nos pidieron otro nombre, renombrar.
-    if not salida_default.exists():
-        raise HTTPException(500, f"No encontre el archivo de salida: {salida_default.name}")
-    if salida_default != salida:
-        salida_default.replace(salida)
+    # --- Linux/servidor: openpyxl (sin Excel). openpyxl no lee .xlsb, asi que
+    # el template se convierte a .xlsx con LibreOffice (asegurar_template_xlsx). ---
+    from app import formato_hd
+    if salida.exists():
+        try:
+            salida.unlink()
+        except PermissionError:
+            raise HTTPException(500, f"No puedo borrar el archivo anterior: {salida.name}")
+    try:
+        template_xlsx = formato_hd.asegurar_template_xlsx(formato)
+    except formato_hd.LibreOfficeNoDisponible as e:
+        raise HTTPException(
+            500,
+            "Falta LibreOffice en el servidor para convertir el template HD (.xlsb) "
+            f"a .xlsx. Instalalo o provee un template .xlsx en FORMATO_HD_PATH. ({e})",
+        )
+    except Exception as e:
+        raise HTTPException(500, f"No pude preparar el template HD: {e}")
+    try:
+        formato_hd.llenar_formato_hd(
+            str(xlsx_int), str(template_xlsx), str(salida),
+            formato_hd.parsear_mapeo(MAPEO_HD),
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Fallo el llenado del formato HD: {e}")
+    if not salida.exists():
+        raise HTTPException(500, f"No se genero el archivo de salida: {salida.name}")
     return salida
 
 
