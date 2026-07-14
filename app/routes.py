@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import func, Integer, case, cast
@@ -3037,12 +3037,17 @@ def exportar_catalogo(request: Request, db: SesionDep):
     # fallback solo cubre el bypass de tests. get_db ya resolvio la BD correcta.
     slug = request.session.get("proyecto") or db_module.PROYECTO_POR_DEFECTO
     data = catalogo_io.exportar_catalogo(db, proyecto=slug)
+    # Serializamos aca (indentado, legible) y devolvemos ESE cuerpo tal cual con
+    # Response: asi Starlette calcula el Content-Length correcto. Con JSONResponse
+    # el cuerpo se re-serializaba compacto y el Content-Length manual (del texto
+    # indentado) quedaba mas grande -> el navegador creia la descarga truncada.
     contenido = _json.dumps(data, ensure_ascii=False, indent=2)
-    return JSONResponse(
-        content=data,
+    return Response(
+        content=contenido,
+        media_type="application/json",
         headers={
             "Content-Disposition": f'attachment; filename="catalogo-{slug}.json"',
-            "Content-Length": str(len(contenido.encode("utf-8"))),
+            "Cache-Control": "no-store",
         },
     )
 
