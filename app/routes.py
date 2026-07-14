@@ -3025,6 +3025,54 @@ def editar_competencia_sitios(cat_id: int, body: CompetenciaSitiosBody, db: Sesi
     return _cat_a_dict(c, int(n or 0))
 
 
+@router.get("/api/catalogo/exportar")
+def exportar_catalogo(request: Request, db: SesionDep):
+    """Descarga el catalogo del proyecto activo (categorias+aranceles+overrides+
+    patrones) como JSON portable. Para mover config entre entornos sin re-IA."""
+    import json as _json
+
+    from app import catalogo_io
+
+    # El ProyectoMiddleware ya garantiza un proyecto activo para /api/*; el
+    # fallback solo cubre el bypass de tests. get_db ya resolvio la BD correcta.
+    slug = request.session.get("proyecto") or db_module.PROYECTO_POR_DEFECTO
+    data = catalogo_io.exportar_catalogo(db, proyecto=slug)
+    contenido = _json.dumps(data, ensure_ascii=False, indent=2)
+    return JSONResponse(
+        content=data,
+        headers={
+            "Content-Disposition": f'attachment; filename="catalogo-{slug}.json"',
+            "Content-Length": str(len(contenido.encode("utf-8"))),
+        },
+    )
+
+
+@router.post("/api/catalogo/importar")
+async def importar_catalogo(request: Request, db: SesionDep, archivo: UploadFile = File(...)):
+    """Importa (upsert, sin borrar) un catalogo JSON exportado en otro entorno.
+
+    Trae categorias/aranceles/overrides/patrones a la BD del proyecto activo.
+    Reclasifica al final porque las keywords/categorias pudieron cambiar.
+    """
+    import json as _json
+
+    from app import catalogo_io
+
+    crudo = await archivo.read()
+    try:
+        data = _json.loads(crudo.decode("utf-8"))
+    except (UnicodeDecodeError, _json.JSONDecodeError) as e:
+        raise HTTPException(422, f"El archivo no es JSON valido: {e}")
+
+    try:
+        res = catalogo_io.importar_catalogo(db, data)
+    except catalogo_io.CatalogoInvalido as e:
+        raise HTTPException(422, str(e))
+
+    invalidar_cache()  # categorias/keywords cambiaron -> refrescar clasificador
+    return res
+
+
 @router.get("/categorias", response_class=HTMLResponse)
 def pagina_categorias(request: Request, db: SesionDep):
     """Pagina CRUD del catalogo de categorias y patrones de descarte."""

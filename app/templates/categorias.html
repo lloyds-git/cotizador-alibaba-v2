@@ -76,11 +76,35 @@
         <span x-show="!proponiendo">✨ Proponer catalogo con IA</span>
         <span x-show="proponiendo" x-text="'Analizando... ' + proponerElapsed + 's'"></span>
       </button>
+      <button type="button" @click="exportarCatalogo()"
+              class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded text-sm"
+              title="Descarga categorias + aranceles + overrides + patrones como JSON (para mover a otro entorno sin re-IA)">
+        ⬇️ Exportar catalogo
+      </button>
+      <button type="button" @click="$refs.importFile.click()"
+              class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+              :disabled="importando"
+              title="Importa un JSON exportado (upsert: crea o actualiza, no borra)">
+        <span x-show="!importando">⬆️ Importar catalogo</span>
+        <span x-show="importando">Importando...</span>
+      </button>
+      <input type="file" x-ref="importFile" accept="application/json,.json"
+             class="hidden" @change="importarCatalogo($event)">
       <button type="button" @click="abrirNuevaCategoria()"
               class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm">
         + Nueva categoria
       </button>
     </div>
+  </div>
+
+  <!-- Resultado export/import de catalogo -->
+  <div class="mb-4 bg-slate-50 border border-slate-200 p-3 rounded text-sm"
+       x-show="ioResultado" x-transition>
+    <span x-text="ioResultado"></span>
+  </div>
+  <div class="mb-4 bg-red-50 border border-red-200 p-3 rounded text-sm text-red-700"
+       x-show="ioError" x-transition>
+    <span x-text="ioError"></span>
   </div>
 
   <!-- Aviso de error de la propuesta IA -->
@@ -456,6 +480,10 @@ function categoriasApp(sinCategoriaInicial, sinDescripcionInicial) {
     propuestaDominio: null,
     avisoAranceles: null,
     aplicando: false,
+    // Export / import de catalogo
+    importando: false,
+    ioResultado: null,
+    ioError: null,
 
     get pendientesArancel() {
       return this.categorias.filter(c => c.arancel_estado === 'pendiente').length;
@@ -489,6 +517,46 @@ function categoriasApp(sinCategoriaInicial, sinDescripcionInicial) {
     async cargarPatrones() {
       const r = await fetch('/api/catalogo/patrones-descarte');
       this.patrones = (await r.json()).items;
+    },
+
+    exportarCatalogo() {
+      // Descarga directa via navegador (respeta cookie de sesion/proyecto).
+      window.location.href = '/api/catalogo/exportar';
+    },
+
+    async importarCatalogo(ev) {
+      const input = ev.target;
+      const file = input.files && input.files[0];
+      if (!file) return;
+      this.ioResultado = null;
+      this.ioError = null;
+      if (!confirm(`Importar catalogo desde "${file.name}"?\n\nCrea o actualiza categorias, aranceles, overrides y patrones (no borra nada).`)) {
+        input.value = '';
+        return;
+      }
+      this.importando = true;
+      try {
+        const fd = new FormData();
+        fd.append('archivo', file);
+        const r = await fetch('/api/catalogo/importar', { method: 'POST', body: fd });
+        const data = await r.json();
+        if (!r.ok) {
+          this.ioError = 'Error al importar: ' + (data.detail || r.status);
+          return;
+        }
+        const f = (t) => `${t.creadas} nuevas, ${t.actualizadas} actualizadas`;
+        this.ioResultado =
+          `Catalogo importado. Categorias: ${f(data.categorias)}. ` +
+          `Aranceles: ${f(data.aranceles)}. ` +
+          `Overrides: ${f(data.aranceles_override)}. ` +
+          `Patrones: ${f(data.patrones_descarte)}.`;
+        await Promise.all([this.cargarCategorias(), this.cargarPatrones()]);
+      } catch (e) {
+        this.ioError = 'Error al importar: ' + e;
+      } finally {
+        this.importando = false;
+        input.value = '';  // permite re-seleccionar el mismo archivo
+      }
     },
 
     abrirNuevaCategoria() {
