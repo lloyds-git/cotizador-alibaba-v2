@@ -3,8 +3,10 @@ services:
     build: .
     image: cotizav2-bd:latest
     container_name: cotizav2-bd
+    # Puerto publicado en el host = APP_PORT (de .env, default 8071). El puerto
+    # interno del contenedor sigue siendo 8081 (uvicorn + healthcheck del Dockerfile).
     ports:
-      - "8071:8081"
+      - "${APP_PORT:-8071}:8081"
     # En Linux: usar UID/GID del host para que los archivos creados en data/
     # queden propiedad de tu usuario, no de root.
     # En Windows: las vars no existen y se usa el default 1000:1000 (no afecta NTFS).

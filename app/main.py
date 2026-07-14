@@ -4,39 +4,20 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 # Carga .env antes de leer cualquier env var (GOOGLE_CLIENT_ID etc.)
 load_dotenv()
 
-from app.db import init_db, get_session_factory
+from app.db import init_sistema_db, asegurar_template, get_sistema_session_factory
 from app.routes import router
+from app.routes_proyectos import router as proyectos_router
 from app.auth import router as auth_router, AuthMiddleware
-
-
-def _auto_seed_aranceles() -> None:
-    """Si la tabla `aranceles` esta vacia al arrancar, la siembra desde
-    config/aranceles.yml. Bootstrap idempotente: si ya tiene filas no hace
-    nada (preserva ediciones manuales hechas via UI)."""
-    try:
-        from app.modelos import Arancel
-        from scripts.seed_aranceles import seed
-        Session = get_session_factory()
-        with Session() as ses:
-            if ses.query(Arancel).count() > 0:
-                return
-        # Tabla vacia -> sembrar
-        seed(reset=False)
-    except Exception as e:
-        # Bootstrap no debe tumbar el arranque si algo falla (ej. YAML
-        # malformado o tabla aun no migrada). Solo log.
-        import logging
-        logging.getLogger(__name__).warning("auto-seed aranceles fallo: %s", e)
+from app.proyecto_middleware import ProyectoMiddleware
 
 
 def _auto_seed_admin_inicial() -> None:
-    """Si la tabla `usuarios_autorizados` esta vacia y .env tiene
+    """Si la tabla `usuarios_autorizados` (BD de sistema) esta vacia y .env tiene
     ADMIN_INICIAL, inserta ese correo. Sin esto, nadie puede entrar a la
     app despues de activar auth (chicken-and-egg)."""
     email = (os.environ.get("ADMIN_INICIAL") or "").strip().lower()
@@ -44,7 +25,7 @@ def _auto_seed_admin_inicial() -> None:
         return
     try:
         from app.modelos import UsuarioAutorizado
-        Session = get_session_factory()
+        Session = get_sistema_session_factory()
         with Session() as ses:
             if ses.query(UsuarioAutorizado).count() > 0:
                 return
@@ -56,14 +37,17 @@ def _auto_seed_admin_inicial() -> None:
 
 
 def crear_app() -> FastAPI:
-    init_db()
-    _auto_seed_aranceles()
+    # Arranque multi-proyecto: crea la BD de sistema (auth + registro de
+    # proyectos) y garantiza la plantilla base. Las BDs de proyecto se crean
+    # bajo demanda al crear un proyecto (clonando la plantilla).
+    init_sistema_db()
+    asegurar_template()
     _auto_seed_admin_inicial()
     app = FastAPI(title="Mascotas BD")
 
-    # Orden de middlewares: add_middleware envuelve (LIFO). Para que
-    # AuthMiddleware pueda leer request.session, SessionMiddleware tiene que
-    # estar mas afuera -> se anade DESPUES.
+    # Orden de middlewares: add_middleware envuelve (LIFO); el ultimo anadido
+    # queda mas afuera. Ejecucion deseada: Session -> Auth -> Proyecto -> app,
+    # asi que se anaden en orden inverso (Proyecto primero, Session al final).
     session_secret = os.environ.get("SESSION_SECRET")
     if not session_secret:
         # Sin SESSION_SECRET: genera uno efimero (las sesiones se invalidan
@@ -71,6 +55,7 @@ def crear_app() -> FastAPI:
         session_secret = secrets.token_hex(32)
     https_only = os.environ.get("SESSION_INSECURE") != "1"
 
+    app.add_middleware(ProyectoMiddleware)
     app.add_middleware(AuthMiddleware)
     app.add_middleware(
         SessionMiddleware,
@@ -80,13 +65,18 @@ def crear_app() -> FastAPI:
         max_age=60 * 60 * 8,  # 8 horas
     )
 
+    @app.get("/healthz")
+    def healthz():
+        # Endpoint publico (ver PUBLIC_PREFIXES) para health check y para
+        # verificar que build/codigo corre en cada instancia sin pasar por login.
+        return {"ok": True, "app": "cotizav2"}
+
     app.include_router(auth_router)
+    app.include_router(proyectos_router)
     app.include_router(router)
 
-    # Servir fotos como archivos estaticos
-    fotos_dir = Path(__file__).parent.parent / "data" / "fotos"
-    fotos_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/fotos", StaticFiles(directory=str(fotos_dir)), name="fotos")
+    # Las fotos se sirven por proyecto via GET /fotos/{ruta} (en routes.py),
+    # que resuelve la carpeta del proyecto activo desde la sesion.
 
     return app
 
@@ -96,4 +86,9 @@ app = crear_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8081)
+    # Puerto/host desde .env (APP_PORT, default 8071). run-local.bat usa esto:
+    # 'python -m app.main'. --reload activo salvo APP_RELOAD=0.
+    port = int(os.environ.get("APP_PORT", "8071"))
+    host = os.environ.get("APP_HOST", "0.0.0.0")
+    reload = os.environ.get("APP_RELOAD", "1") != "0"
+    uvicorn.run("app.main:app", host=host, port=port, reload=reload)

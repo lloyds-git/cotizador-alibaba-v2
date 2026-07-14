@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Proyectos{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto">
+
+  <div class="mb-4 bg-white p-4 rounded shadow">
+    <h2 class="text-lg font-bold mb-2">Proyectos</h2>
+    <p class="text-sm text-gray-600">
+      Cada proyecto tiene su propia base de datos (productos, proveedores, fotos
+      y cotizaciones aisladas). Elige uno para trabajar o crea uno nuevo a partir
+      de la plantilla base (trae categorias y aranceles, sin productos).
+    </p>
+    {% if activo %}
+      <p class="text-sm mt-2">Proyecto activo:
+        <span class="font-mono font-semibold text-blue-700">{{ activo }}</span></p>
+    {% endif %}
+  </div>
+
+  <div class="mb-4 bg-white p-4 rounded shadow">
+    <h3 class="font-semibold text-base mb-3">Elegir proyecto</h3>
+    {% if proyectos %}
+      <ul class="divide-y">
+        {% for p in proyectos %}
+          <li class="py-2 flex items-center justify-between">
+            <div>
+              <span class="font-medium">{{ p.nombre }}</span>
+              <span class="text-xs text-gray-500 font-mono ml-2">{{ p.slug }}</span>
+              {% if not p.activo %}
+                <span class="text-xs text-red-500 ml-2">(inactivo)</span>
+              {% endif %}
+            </div>
+            {% if p.activo %}
+              <form method="post" action="/proyectos/seleccionar">
+                <input type="hidden" name="slug" value="{{ p.slug }}">
+                <button type="submit"
+                        class="text-sm px-3 py-1 rounded {{ 'bg-gray-200 text-gray-600' if p.slug == activo else 'bg-blue-600 hover:bg-blue-700 text-white' }}"
+                        {{ 'disabled' if p.slug == activo else '' }}>
+                  {{ 'Activo' if p.slug == activo else 'Usar' }}
+                </button>
+              </form>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-sm text-gray-500">Aun no hay proyectos. Crea el primero abajo.</p>
+    {% endif %}
+  </div>
+
+  <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
+    <h3 class="font-semibold text-base mb-3">Nuevo proyecto</h3>
+    <form method="post" action="/proyectos" class="grid grid-cols-2 gap-3 text-sm items-end">
+      <label>Nombre:
+        <input type="text" name="nombre" placeholder="Cliente A - 2026"
+               class="border rounded px-2 py-1 w-full mt-1">
+      </label>
+      <label>Slug (id en disco):
+        <input type="text" name="slug" required placeholder="cliente-a"
+               pattern="[a-z0-9][a-z0-9_-]*"
+               title="minusculas, numeros, guion o guion-bajo; sin espacios ni acentos"
+               class="border rounded px-2 py-1 w-full mt-1 font-mono">
+      </label>
+      <div class="col-span-2">
+        <button type="submit"
+                class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded">
+          Crear y activar
+        </button>
+        <span class="text-xs text-gray-500 ml-2">
+          Se crea data/proyectos/&lt;slug&gt;/ clonando la plantilla.
+        </span>
+      </div>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

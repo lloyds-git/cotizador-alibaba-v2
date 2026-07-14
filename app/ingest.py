@@ -306,6 +306,7 @@ def ingestar_xlsx_intermedio(
     xlsx_path: str,
     nombre_proveedor: str | None,
     fotos_destino: str,
+    proveedor_forzado: str | None = None,
 ) -> int:
     """
     Lee un xlsx intermedio (el output de pdf_a_formato_hd.py paso 3) y lo
@@ -314,12 +315,20 @@ def ingestar_xlsx_intermedio(
     Si nombre_proveedor es None, se resuelve via resolver_nombre_proveedor
     (lee .meta.json o cae al nombre del archivo).
 
+    proveedor_forzado (opcional): nombre de proveedor destino elegido por el
+    usuario. Tiene PRECEDENCIA sobre el seller detectado del PDF -> permite
+    agregar un 2o PDF de la misma propuesta al proveedor correcto en vez de
+    crear un duplicado. Igual pasa por matching tolerante (buscar_proveedor_existente).
+
     Devuelve el numero de productos NUEVOS insertados (no incluye actualizados).
     """
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
     ws = wb.active
 
-    nombre_proveedor = resolver_nombre_proveedor(xlsx_path, fallback=nombre_proveedor)
+    if proveedor_forzado and proveedor_forzado.strip():
+        nombre_proveedor = proveedor_forzado.strip()
+    else:
+        nombre_proveedor = resolver_nombre_proveedor(xlsx_path, fallback=nombre_proveedor)
     archivo_pdf = resolver_archivo_pdf(xlsx_path)
 
     prov = buscar_proveedor_existente(session, nombre_proveedor)
@@ -407,6 +416,7 @@ def ingestar_xlsx_intermedio(
             session.add(prod)
 
         prod.descripcion = desc
+        prod.archivo_pdf = archivo_pdf   # PDF de origen de ESTE producto
         prod.fob_usd = fob_usd
         prod.medidas = medidas
         prod.material = material

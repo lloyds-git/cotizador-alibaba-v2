@@ -8,6 +8,8 @@ endpoint web POST /api/ingest/pdf pueda invocarlo sin duplicar logica
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +39,7 @@ def procesar_pdf(
     *,
     fotos_destino: Path,
     forzar_calidad: bool = False,
+    proveedor_forzado: str | None = None,
 ) -> dict:
     """Procesa un PDF y lo ingesta a la BD.
 
@@ -129,6 +132,7 @@ def procesar_pdf(
             xlsx_path=str(xlsx_intermedio),
             nombre_proveedor=None,  # lo resuelve ingest desde .meta.json
             fotos_destino=str(fotos_destino),
+            proveedor_forzado=proveedor_forzado,
         )
     except Exception as e:
         session.rollback()
@@ -140,6 +144,14 @@ def procesar_pdf(
     # el ingest haya consolidado a un proveedor preexistente con nombre
     # ligeramente distinto (ej. con/sin LTD); si buscaramos por nombre exacto
     # nos daria None y el gate reportaria VACIO incorrectamente.
+    #
+    # Si el usuario forzo un proveedor destino, los productos se ingestaron BAJO
+    # ESE proveedor, no bajo el seller detectado del PDF. El gate (y el reporte)
+    # deben mirar el proveedor forzado; si no, buscariamos el seller detectado
+    # (que puede venir mal, ej. 'gzyycrafts'), no encontrariamos esos productos y
+    # reportariamos un falso VACIO -> rollback.
+    if proveedor_forzado and proveedor_forzado.strip():
+        nombre_prov = proveedor_forzado.strip()
     session.flush()
     prov = buscar_proveedor_existente(session, nombre_prov)
     prods = (
@@ -215,3 +227,39 @@ def _limpiar_fotos_nuevas(fotos_destino: Path, fotos_antes: set[Path]) -> int:
         except OSError:
             pass
     return borradas
+
+
+def _base_corto(pdf_path: Path) -> str:
+    """Nombre corto del PDF tal como pdf_a_formato_hd.py nombra sus artefactos
+    (_adobe_extract_<stem>, _intermedio_<stem>)."""
+    base = re.sub(r"[^\w\-]+", "_", pdf_path.stem)
+    return re.sub(r"_+", "_", base).strip("_")[:60].rstrip("_")
+
+
+def limpiar_artefactos(pdf_path: Path, *, borrar_pdf: bool) -> None:
+    """Borra los artefactos de TRABAJO de un intento de ingesta:
+      - `_adobe_extract_<stem>/` (structuredData.json, tables/, figures/ y el
+        `_resultado.zip` crudo de Adobe) -> solo se usan durante el procesado.
+      - `_intermedio_<stem>.*`   (xlsx + .meta.json).
+    No se usan en runtime. Con borrar_pdf=True (ingest fallido, nada quedo en BD)
+    borra tambien el PDF subido; en exito el PDF se conserva porque los productos
+    lo referencian como "Cotizacion original". Best-effort: nunca rompe el flujo.
+    """
+    try:
+        carpeta = pdf_path.parent
+        stem = _base_corto(pdf_path)
+        extract = carpeta / f"_adobe_extract_{stem}"
+        if extract.is_dir():
+            shutil.rmtree(extract, ignore_errors=True)
+        for f in carpeta.glob(f"_intermedio_{stem}.*"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        if borrar_pdf and pdf_path.exists():
+            try:
+                pdf_path.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass  # limpieza best-effort

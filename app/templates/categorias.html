@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Categorias{% endblock %}
 {% block content %}
-<div x-data="categoriasApp({{ productos_sin_categoria }})" x-init="init()">
+<div x-data="categoriasApp({{ productos_sin_categoria }}, {{ productos_sin_descripcion }})" x-init="init()">
 
   <div class="mb-4 bg-white p-4 rounded shadow">
     <h2 class="text-lg font-bold mb-2">Catalogo de categorias</h2>
@@ -18,6 +18,26 @@
       'alimentadores' (40) para "hummingbird feeder".
     </p>
     <a href="/" class="text-sm text-gray-500 hover:underline">← Volver a productos</a>
+  </div>
+
+  <!-- Banner: productos sin descripcion (describir por vision) -->
+  <div class="mb-4 bg-indigo-50 border border-indigo-200 p-3 rounded flex items-center justify-between text-sm"
+       x-show="sinDescripcion > 0">
+    <div>
+      <span class="font-semibold" x-text="sinDescripcion"></span>
+      productos sin descripcion (catalogo por SKU + foto). Genera descripcion +
+      tags con IA a partir de la foto para poder clasificar, cotizar y buscar.
+    </div>
+    <button type="button" @click="describirFotosIA()"
+            class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+            :disabled="describiendo">
+      <span x-show="!describiendo">🖼️ Describir fotos con IA</span>
+      <span x-show="describiendo" x-text="'Describiendo... ' + describirElapsed + 's'"></span>
+    </button>
+  </div>
+  <div class="mb-4 bg-indigo-50 border border-indigo-200 p-3 rounded text-sm"
+       x-show="describirResultado" x-transition>
+    <span x-text="describirResultado"></span>
   </div>
 
   <!-- Banner reclasificacion -->
@@ -37,13 +57,118 @@
     <span x-text="ultimoResultado"></span>
   </div>
 
+  <!-- Banner aranceles pendientes -->
+  <div class="mb-4 bg-amber-50 border border-amber-200 p-3 rounded text-sm"
+       x-show="pendientesArancel > 0">
+    <span class="font-semibold" x-text="pendientesArancel"></span>
+    categoria(s) con arancel <span class="font-semibold">pendiente</span>: sin
+    fraccion confirmada, la cotizacion usa el default. Editalas abajo ("arancel").
+  </div>
+
   <!-- ============ CATEGORIAS ============ -->
   <div class="mb-2 flex items-center justify-between">
     <h3 class="font-semibold">Categorias (<span x-text="categorias.length"></span>)</h3>
-    <button type="button" @click="abrirNuevaCategoria()"
-            class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm">
-      + Nueva categoria
-    </button>
+    <div class="flex items-center gap-2">
+      <button type="button" @click="proponerCatalogoIA()"
+              class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1 rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+              :disabled="proponiendo"
+              title="Analiza los productos ingestados y propone categorias + keywords + fraccion arancelaria (IA)">
+        <span x-show="!proponiendo">✨ Proponer catalogo con IA</span>
+        <span x-show="proponiendo" x-text="'Analizando... ' + proponerElapsed + 's'"></span>
+      </button>
+      <button type="button" @click="abrirNuevaCategoria()"
+              class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm">
+        + Nueva categoria
+      </button>
+    </div>
+  </div>
+
+  <!-- Aviso de error de la propuesta IA -->
+  <div class="mb-4 bg-red-50 border border-red-200 p-3 rounded text-sm text-red-700"
+       x-show="proponerError" x-transition>
+    <span x-text="proponerError"></span>
+  </div>
+
+  <!-- ============ PANEL DE REVISION DE PROPUESTA IA ============ -->
+  <div x-show="propuesta" x-transition
+       class="mb-6 bg-white p-4 rounded shadow border-l-4 border-purple-500" style="display:none">
+    <div class="flex items-center justify-between mb-2">
+      <h4 class="font-semibold">
+        Propuesta de catalogo
+        <span class="text-gray-500 font-normal" x-show="propuestaDominio"
+              x-text="'· dominio: ' + propuestaDominio"></span>
+      </h4>
+      <span class="text-xs text-gray-500" x-text="(propuesta ? propuesta.length : 0) + ' categorias propuestas'"></span>
+    </div>
+    <p class="text-xs text-gray-500 mb-2">
+      Revisa y edita antes de aplicar. Solo se guardan las categorias marcadas.
+      Una fraccion valida (<span class="font-mono">NNNN.NN.NN</span>) + tasa queda
+      <span class="text-green-700 font-semibold">confirmada</span> y afecta la
+      cotizacion; sin fraccion queda <span class="text-amber-700 font-semibold">pendiente</span>.
+      Las keywords van una por linea.
+    </p>
+    <div class="mb-2 bg-amber-50 border border-amber-200 p-2 rounded text-xs text-amber-700"
+         x-show="avisoAranceles" x-text="avisoAranceles"></div>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-100 text-left">
+          <tr>
+            <th class="p-2 w-10 text-center">✓</th>
+            <th class="p-2 w-16">Orden</th>
+            <th class="p-2 w-40">Slug</th>
+            <th class="p-2">Keywords</th>
+            <th class="p-2 w-32">Fraccion</th>
+            <th class="p-2 w-20">Tasa %</th>
+            <th class="p-2 w-24">Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="(it, idx) in propuesta" :key="idx">
+            <tr class="border-t align-top">
+              <td class="p-2 text-center">
+                <input type="checkbox" x-model="it.incluir">
+              </td>
+              <td class="p-2">
+                <input type="number" x-model.number="it.orden"
+                       class="border rounded px-1 py-0.5 w-14 font-mono text-xs">
+              </td>
+              <td class="p-2">
+                <input type="text" x-model="it.slug"
+                       class="border rounded px-1 py-0.5 w-full font-mono text-xs">
+                <div class="text-[10px] text-gray-500" x-text="it.nombre"></div>
+              </td>
+              <td class="p-2">
+                <textarea x-model="it.kwTexto" rows="3"
+                          class="border rounded px-1 py-0.5 w-full font-mono text-[11px]"></textarea>
+              </td>
+              <td class="p-2">
+                <input type="text" x-model="it.fraccion" placeholder="NNNN.NN.NN"
+                       class="border rounded px-1 py-0.5 w-full font-mono text-xs">
+                <a x-show="it.fuente_url" :href="it.fuente_url" target="_blank"
+                   class="text-[10px] text-blue-500 hover:underline">fuente</a>
+              </td>
+              <td class="p-2">
+                <input type="number" step="0.1" x-model.number="it.tasa_pct"
+                       class="border rounded px-1 py-0.5 w-16 font-mono text-xs">
+              </td>
+              <td class="p-2 text-xs" x-html="badgeEstadoPropuesta(it)"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="mt-3 flex gap-2 items-center">
+      <button type="button" @click="aplicarPropuesta()"
+              class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm disabled:opacity-40"
+              :disabled="aplicando"
+              x-text="aplicando ? 'Aplicando...' : 'Aplicar seleccionadas'"></button>
+      <button type="button" @click="descartarPropuesta()"
+              class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm">
+        Descartar
+      </button>
+    </div>
   </div>
 
   <!-- Formulario crear/editar categoria -->
@@ -100,14 +225,85 @@
     </div>
   </div>
 
+  <!-- Panel arancel de categoria -->
+  <div x-show="arCat" x-transition class="mb-4 bg-white p-4 rounded shadow border-l-4 border-amber-500" style="display:none">
+    <h4 class="font-semibold mb-2">
+      Arancel de <span class="font-mono" x-text="arCat && arCat.slug"></span>
+    </h4>
+    <p class="text-xs text-gray-500 mb-2">
+      Fraccion arancelaria TIGIE (formato <span class="font-mono">NNNN.NN.NN</span>)
+      + tasa IGI %. Con ambos, la categoria queda
+      <span class="text-green-700 font-semibold">confirmada</span> y su fraccion
+      aplica a la cotizacion de todos sus productos. Deja la fraccion vacia para
+      dejarla <span class="text-amber-700 font-semibold">pendiente</span>.
+      Confirmar con agente aduanal.
+    </p>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <label>Fraccion:
+        <input type="text" x-model="arCat.fraccion" placeholder="9617.00.01"
+               class="border rounded px-2 py-1 w-full mt-1 font-mono">
+      </label>
+      <label>Tasa IGI %:
+        <input type="number" step="0.1" x-model.number="arCat.tasa_pct"
+               class="border rounded px-2 py-1 w-full mt-1 font-mono">
+      </label>
+    </div>
+    <label class="block mt-2 text-sm">Nota:
+      <input type="text" x-model="arCat.arancel_nota"
+             class="border rounded px-2 py-1 w-full mt-1">
+    </label>
+    <div class="mt-3 flex gap-2">
+      <button type="button" @click="guardarArancel()"
+              class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm">
+        Guardar arancel
+      </button>
+      <button type="button" @click="arCat = null"
+              class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm">
+        Cancelar
+      </button>
+    </div>
+  </div>
+
+  <!-- Panel sitios de competencia de categoria -->
+  <div x-show="sitiosCat" x-transition class="mb-4 bg-white p-4 rounded shadow border-l-4 border-amber-600" style="display:none">
+    <h4 class="font-semibold mb-2">
+      Sitios de competencia de <span class="font-mono" x-text="sitiosCat && sitiosCat.slug"></span>
+    </h4>
+    <p class="text-xs text-gray-500 mb-2">
+      Dominios donde buscar competencia para los productos de esta categoria
+      (separados por coma o espacio; acepta dominios o URLs). Ej.
+      <span class="font-mono">amazon.com.mx, mercadolibre.com.mx, petco.com.mx</span>.
+      Dejalo <span class="font-semibold">vacio</span> para usar los 3 default
+      (Amazon MX / ML MX / Petco MX). El campo manual del buscador se suma a estos.
+    </p>
+    <label class="block text-sm">Sitios:
+      <input type="text" x-model="sitiosCat.competencia_sitios"
+             placeholder="amazon.com.mx, mercadolibre.com.mx, petco.com.mx"
+             class="border rounded px-2 py-1 w-full mt-1 font-mono">
+    </label>
+    <div class="mt-3 flex gap-2">
+      <button type="button" @click="guardarSitios()"
+              class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm">
+        Guardar sitios
+      </button>
+      <button type="button" @click="sitiosCat = null"
+              class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm">
+        Cancelar
+      </button>
+    </div>
+  </div>
+
   <table class="bg-white w-full text-sm shadow rounded overflow-hidden mb-6">
     <thead class="bg-gray-100 text-left">
       <tr>
         <th class="p-2 w-16">Orden</th>
         <th class="p-2">Slug</th>
         <th class="p-2">Keywords</th>
-        <th class="p-2 text-right w-24">Productos</th>
-        <th class="p-2 w-40"></th>
+        <th class="p-2 w-28">Fraccion</th>
+        <th class="p-2 w-16 text-right">Tasa</th>
+        <th class="p-2 w-24">Estado</th>
+        <th class="p-2 text-right w-20">Productos</th>
+        <th class="p-2 w-52"></th>
       </tr>
     </thead>
     <tbody>
@@ -125,10 +321,20 @@
               </template>
             </div>
           </td>
+          <td class="p-2 font-mono text-xs" x-text="c.fraccion || '—'"></td>
+          <td class="p-2 font-mono text-xs text-right"
+              x-text="c.tasa_pct != null ? c.tasa_pct + '%' : '—'"></td>
+          <td class="p-2 text-xs" x-html="badgeEstado(c.arancel_estado)"></td>
           <td class="p-2 text-right font-mono" x-text="c.productos"></td>
-          <td class="p-2 text-right whitespace-nowrap">
+          <td class="p-2 text-right">
+            <button type="button" @click="editarArancel(c)"
+                    class="text-amber-600 hover:underline text-xs">arancel</button>
             <button type="button" @click="editarKeywords(c)"
-                    class="text-purple-600 hover:underline text-xs">keywords</button>
+                    class="text-purple-600 hover:underline text-xs ml-2">keywords</button>
+            <button type="button" @click="editarSitios(c)"
+                    class="text-amber-700 hover:underline text-xs ml-2"
+                    :class="c.competencia_sitios ? 'font-semibold' : ''"
+                    :title="c.competencia_sitios || 'Usa los 3 sitios default'">sitios</button>
             <button type="button" @click="editarCategoria(c)"
                     class="text-blue-600 hover:underline text-xs ml-2">editar</button>
             <button type="button" @click="eliminarCategoria(c)"
@@ -142,9 +348,9 @@
         </tr>
       </template>
       <tr x-show="categorias.length === 0">
-        <td colspan="5" class="p-4 text-center text-gray-500">
-          Catalogo vacio. Corre <span class="font-mono text-xs">python -m app.cli seed-categorias</span>
-          o crea una con "+ Nueva categoria".
+        <td colspan="8" class="p-4 text-center text-gray-500">
+          Catalogo vacio. Usa <span class="font-semibold">✨ Proponer catalogo con IA</span>
+          (analiza los productos ingestados) o crea una con "+ Nueva categoria".
         </td>
       </tr>
     </tbody>
@@ -225,19 +431,54 @@
 </div>
 
 <script>
-function categoriasApp(sinCategoriaInicial) {
+function categoriasApp(sinCategoriaInicial, sinDescripcionInicial) {
   return {
     categorias: [],
     patrones: [],
     formCat: null,
     formPat: null,
     kwCat: null,
+    arCat: null,
+    sitiosCat: null,
     sinCategoria: sinCategoriaInicial || 0,
+    sinDescripcion: sinDescripcionInicial || 0,
     reclasificando: false,
     ultimoResultado: null,
+    // Describir fotos con IA (vision)
+    describiendo: false,
+    describirElapsed: 0,
+    describirResultado: null,
+    // Propuesta IA
+    proponiendo: false,
+    proponerElapsed: 0,
+    proponerError: null,
+    propuesta: null,
+    propuestaDominio: null,
+    avisoAranceles: null,
+    aplicando: false,
+
+    get pendientesArancel() {
+      return this.categorias.filter(c => c.arancel_estado === 'pendiente').length;
+    },
 
     async init() {
       await Promise.all([this.cargarCategorias(), this.cargarPatrones()]);
+    },
+
+    badgeEstado(estado) {
+      if (estado === 'confirmado')
+        return '<span class="bg-green-100 text-green-700 px-2 py-0.5 rounded text-xs">confirmado</span>';
+      if (estado === 'pendiente')
+        return '<span class="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs">pendiente</span>';
+      return '<span class="text-gray-400 text-xs">—</span>';
+    },
+
+    badgeEstadoPropuesta(it) {
+      const frac = (it.fraccion || '').trim();
+      const ok = /^\d{4}\.\d{2}\.\d{2}$/.test(frac) && it.tasa_pct != null && it.tasa_pct !== '';
+      return ok
+        ? '<span class="bg-green-100 text-green-700 px-2 py-0.5 rounded text-xs">confirmara</span>'
+        : '<span class="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs">pendiente</span>';
     },
 
     async cargarCategorias() {
@@ -341,6 +582,226 @@ function categoriasApp(sinCategoriaInicial) {
       } finally {
         this.reclasificando = false;
       }
+    },
+
+    // -------- Describir fotos con IA (vision) --------
+    async describirFotosIA() {
+      if (!confirm(`Generar descripcion + tags con IA para los ${this.sinDescripcion} productos sin descripcion? (usa la foto de cada producto)`)) return;
+      this.describiendo = true;
+      this.describirElapsed = 0;
+      this.describirResultado = null;
+      try {
+        const r0 = await fetch('/api/catalogo/describir-fotos', { method: 'POST' });
+        let inicio = null;
+        try { inicio = await r0.json(); } catch (_) {}
+        if (r0.status !== 202 || !inicio || !inicio.job_id) {
+          this.describirResultado = (inicio && inicio.detail) || ('No se pudo iniciar (' + r0.status + ').');
+          return;
+        }
+        const jobId = inicio.job_id;
+        const INTERVALO = 3000;
+        const MAX_ESPERA = 30 * 60 * 1000; // vision de muchas fotos puede tardar
+        const t0 = Date.now();
+        while (true) {
+          await new Promise(res => setTimeout(res, INTERVALO));
+          let rs, est = null;
+          try {
+            rs = await fetch('/api/catalogo/describir-fotos/status/' + jobId);
+            try { est = await rs.json(); } catch (_) {}
+          } catch (e) {
+            if (Date.now() - t0 > MAX_ESPERA) { this.describirResultado = 'Se perdio la conexion.'; return; }
+            continue;
+          }
+          if (rs.status === 404) {
+            this.describirResultado = (est && est.detail) || 'El proceso se perdio (servidor reiniciado). Reintenta.';
+            return;
+          }
+          if (est && typeof est.elapsed === 'number') this.describirElapsed = Math.round(est.elapsed);
+          if (est && est.estado === 'listo') {
+            const b = est.resultado || {};
+            if (est.http_status === 200 && b.ok) {
+              this.describirResultado = `Descripciones generadas: ${b.descritos}`
+                + (b.clasificados ? `, ${b.clasificados} clasificados` : '')
+                + (b.sin_foto ? `, ${b.sin_foto} sin foto` : '')
+                + (b.aviso ? `. ${b.aviso}` : '') + '.';
+              this.sinDescripcion = Math.max(0, this.sinDescripcion - (b.descritos || 0));
+              await this.cargarCategorias();
+            } else {
+              this.describirResultado = 'Error: ' + (b.error || est.http_status);
+            }
+            return;
+          }
+          if (Date.now() - t0 > MAX_ESPERA) { this.describirResultado = 'El proceso supero el tiempo maximo.'; return; }
+        }
+      } catch (e) {
+        this.describirResultado = 'Error de red: ' + e.message;
+      } finally {
+        this.describiendo = false;
+      }
+    },
+
+    // -------- Propuesta de catalogo con IA --------
+    async proponerCatalogoIA() {
+      this.proponerError = null;
+      this.propuesta = null;
+      this.proponiendo = true;
+      this.proponerElapsed = 0;
+      try {
+        // 1) Encolar el job (202 + job_id). Procesa en segundo plano.
+        const r0 = await fetch('/api/catalogo/proponer-ia', { method: 'POST' });
+        let inicio = null;
+        try { inicio = await r0.json(); } catch (_) {}
+        if (r0.status !== 202 || !inicio || !inicio.job_id) {
+          this.proponerError = (inicio && inicio.detail) || ('No se pudo iniciar (' + r0.status + ').');
+          return;
+        }
+        // 2) Polling del estado hasta que termine.
+        const jobId = inicio.job_id;
+        const INTERVALO = 3000;
+        const MAX_ESPERA = 15 * 60 * 1000;
+        const t0 = Date.now();
+        while (true) {
+          await new Promise(res => setTimeout(res, INTERVALO));
+          let rs, est = null;
+          try {
+            rs = await fetch('/api/catalogo/proponer-ia/status/' + jobId);
+            try { est = await rs.json(); } catch (_) {}
+          } catch (e) {
+            if (Date.now() - t0 > MAX_ESPERA) {
+              this.proponerError = 'Se perdio la conexion durante el analisis.';
+              return;
+            }
+            continue;
+          }
+          if (rs.status === 404) {
+            this.proponerError = (est && est.detail) || 'El proceso se perdio (servidor reiniciado). Reintenta.';
+            return;
+          }
+          if (est && typeof est.elapsed === 'number') this.proponerElapsed = Math.round(est.elapsed);
+          if (est && est.estado === 'listo') {
+            this._recibirPropuesta(est.http_status, est.resultado || {});
+            return;
+          }
+          if (Date.now() - t0 > MAX_ESPERA) {
+            this.proponerError = 'El analisis supero los 15 min.';
+            return;
+          }
+        }
+      } catch (e) {
+        this.proponerError = 'Error de red: ' + e.message;
+      } finally {
+        this.proponiendo = false;
+      }
+    },
+
+    _recibirPropuesta(status, body) {
+      if (status !== 200 || !body || !body.ok) {
+        this.proponerError = (body && body.error) || 'La IA no devolvio una propuesta.';
+        return;
+      }
+      this.propuestaDominio = body.dominio || null;
+      this.avisoAranceles = body.aviso_aranceles || null;
+      this.propuesta = (body.categorias || []).map(c => ({
+        incluir: true,
+        slug: c.slug,
+        nombre: c.nombre || '',
+        orden: c.orden != null ? c.orden : 100,
+        kwTexto: (c.keywords || []).join('\n'),
+        fraccion: c.fraccion || '',
+        tasa_pct: c.tasa_pct,
+        fuente_url: c.fuente_url || null,
+        arancel_nota: c.nota || '',
+      }));
+    },
+
+    descartarPropuesta() {
+      this.propuesta = null;
+      this.propuestaDominio = null;
+      this.avisoAranceles = null;
+      this.proponerError = null;
+    },
+
+    async aplicarPropuesta() {
+      const seleccionadas = (this.propuesta || []).filter(it => it.incluir);
+      if (seleccionadas.length === 0) { alert('Marca al menos una categoria.'); return; }
+      const items = seleccionadas.map(it => ({
+        slug: (it.slug || '').trim(),
+        orden: it.orden != null ? it.orden : 100,
+        keywords: (it.kwTexto || '').split('\n'),
+        fraccion: (it.fraccion || '').trim() || null,
+        tasa_pct: (it.tasa_pct === '' ? null : it.tasa_pct),
+        arancel_nota: it.arancel_nota || null,
+        arancel_fuente_url: it.fuente_url || null,
+      }));
+      this.aplicando = true;
+      try {
+        const r = await fetch('/api/catalogo/aplicar-propuesta', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ items }),
+        });
+        if (!r.ok) { alert('Error: ' + r.status + ' ' + await r.text()); return; }
+        const j = await r.json();
+        this.propuesta = null;
+        await this.cargarCategorias();
+        this.ultimoResultado = `Catalogo aplicado: ${j.creadas} creadas, ${j.actualizadas} actualizadas, `
+          + `${j.confirmadas} con arancel confirmado, ${j.pendientes} pendientes.`;
+        // Reclasificar los productos sin categoria con las keywords recien aplicadas.
+        if (j.reclasificar) {
+          const rr = await fetch('/api/catalogo/reclasificar-sin-categoria', { method: 'POST' });
+          if (rr.ok) {
+            const jr = await rr.json();
+            this.sinCategoria = jr.sin_match;
+            this.ultimoResultado += ` Reclasificacion: ${jr.asignados} asignados, ${jr.sin_match} sin match.`;
+            await this.cargarCategorias();
+          }
+        }
+        setTimeout(() => this.ultimoResultado = null, 12000);
+      } finally {
+        this.aplicando = false;
+      }
+    },
+
+    // -------- Editar arancel de una categoria --------
+    editarArancel(c) {
+      this.arCat = {
+        id: c.id, slug: c.slug,
+        fraccion: c.fraccion || '',
+        tasa_pct: c.tasa_pct,
+        arancel_nota: c.arancel_nota || '',
+      };
+    },
+
+    async guardarArancel() {
+      const body = {
+        fraccion: (this.arCat.fraccion || '').trim() || null,
+        tasa_pct: (this.arCat.tasa_pct === '' ? null : this.arCat.tasa_pct),
+        arancel_nota: this.arCat.arancel_nota || null,
+      };
+      const r = await fetch(`/api/catalogo/categorias/${this.arCat.id}/arancel`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) { alert('Error: ' + r.status + ' ' + await r.text()); return; }
+      this.arCat = null;
+      await this.cargarCategorias();
+    },
+
+    // -------- Editar sitios de competencia de una categoria --------
+    editarSitios(c) {
+      this.sitiosCat = { id: c.id, slug: c.slug, competencia_sitios: c.competencia_sitios || '' };
+    },
+
+    async guardarSitios() {
+      const body = {
+        competencia_sitios: (this.sitiosCat.competencia_sitios || '').trim() || null,
+      };
+      const r = await fetch(`/api/catalogo/categorias/${this.sitiosCat.id}/competencia-sitios`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) { alert('Error: ' + r.status + ' ' + await r.text()); return; }
+      this.sitiosCat = null;
+      await this.cargarCategorias();
     },
   };
 }

@@ -27,6 +27,38 @@ def _construir_xlsx_minimo(path: Path, filas: list[dict]) -> None:
     wb.save(path)
 
 
+def test_proveedor_forzado_tiene_precedencia(db_session, tmp_path):
+    """proveedor_forzado manda los productos al proveedor elegido (no crea otro)."""
+    from app.modelos import Proveedor, Producto
+    xlsx = tmp_path / "_intermedio_Goodrich-2.xlsx"
+    _construir_xlsx_minimo(xlsx, [{"sku": "56-1", "fob": 2.0}, {"sku": "56-2", "fob": 3.0}])
+
+    ingestar_xlsx_intermedio(
+        session=db_session, xlsx_path=str(xlsx),
+        nombre_proveedor="Ignorado", fotos_destino=str(tmp_path / "fotos"),
+        proveedor_forzado="Tianjin Goodrich",
+    )
+    db_session.commit()
+    provs = [p.nombre for p in db_session.query(Proveedor).all()]
+    assert provs == ["Tianjin Goodrich"]
+    assert db_session.query(Producto).filter_by(sku="56-1").first().proveedor.nombre == "Tianjin Goodrich"
+
+
+def test_producto_guarda_archivo_pdf(db_session, tmp_path):
+    """Cada producto guarda su PDF de origen (archivo_pdf)."""
+    from app.modelos import Producto
+    xlsx = tmp_path / "_intermedio_Goodrich-2.xlsx"
+    _construir_xlsx_minimo(xlsx, [{"sku": "56-9", "fob": 1.0}])
+    ingestar_xlsx_intermedio(
+        session=db_session, xlsx_path=str(xlsx),
+        nombre_proveedor="V", fotos_destino=str(tmp_path / "fotos"),
+    )
+    db_session.commit()
+    p = db_session.query(Producto).filter_by(sku="56-9").first()
+    # Sin meta.json, resolver_archivo_pdf cae al nombre del xlsx intermedio.
+    assert p.archivo_pdf == "_intermedio_Goodrich-2.xlsx"
+
+
 def test_ingest_inserta_proveedor_y_productos(db_session, tmp_path):
     fixture = Path(__file__).parent / "fixtures" / "_intermedio_demo.xlsx"
     fotos_dir = tmp_path / "fotos"

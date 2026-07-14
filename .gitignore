@@ -1,6 +1,10 @@
 # --- BD y datos generados ---
 data/*.db
 data/fotos/
+# Modelo multi-proyecto: BDs por proyecto + carpetas fotos/exports
+data/proyectos/
+data/_template.db
+data/sistema.db
 _adobe_extract_*/
 _intermedio_*.xlsx
 formato-hd-*.xlsx

@@ -40,9 +40,31 @@ def favicon():
     return FileResponse(FAVICON_PATH)
 
 
-def get_db():
-    # Lookup tardio para permitir monkeypatch en tests
-    SessionFactory = db_module.get_session_factory()
+@router.get("/fotos/{ruta:path}", include_in_schema=False)
+def servir_foto(ruta: str, request: Request):
+    """Sirve fotos del proyecto activo (reemplaza el StaticFiles global).
+
+    Publica (en PUBLIC_PREFIXES) pero resuelve la carpeta desde
+    session['proyecto']: las fotos las pide el navegador como subrecurso de una
+    pagina autenticada, asi que la cookie de sesion trae el proyecto. Guard
+    anti path-traversal: el archivo debe quedar dentro de la carpeta del proyecto.
+    """
+    slug = request.session.get("proyecto")
+    if not slug or not db_module.slug_valido(slug):
+        raise HTTPException(404)
+    fotos_dir = db_module.fotos_dir_proyecto(slug).resolve()
+    destino = (fotos_dir / ruta).resolve()
+    if not destino.is_file() or not destino.is_relative_to(fotos_dir):
+        raise HTTPException(404)
+    return FileResponse(str(destino))
+
+
+def get_db(request: Request):
+    # Lookup tardio para permitir monkeypatch en tests. El proyecto activo se
+    # resuelve desde session['proyecto']; en tests get_db se sustituye entero via
+    # app.dependency_overrides, asi que la firma con Request no los afecta.
+    slug = request.session.get("proyecto")
+    SessionFactory = db_module.get_session_factory(slug)
     db = SessionFactory()
     try:
         yield db
@@ -51,6 +73,36 @@ def get_db():
 
 
 SesionDep = Annotated[Session, Depends(get_db)]
+
+
+def _slug_activo(request: Request) -> str:
+    """Slug del proyecto activo en la sesion. 400 si no hay ninguno.
+
+    El ProyectoMiddleware ya redirige/rechaza requests sin proyecto, pero los
+    endpoints que construyen rutas de fotos/exports lo revalidan por defensa."""
+    slug = request.session.get("proyecto")
+    if not slug:
+        raise HTTPException(400, "No hay proyecto seleccionado.")
+    return slug
+
+
+def _base_fotos(slug: str) -> str:
+    """Carpeta que contiene 'fotos/' del proyecto (ruta_relativa = 'fotos/<n>')."""
+    return str(db_module.fotos_dir_proyecto(slug).parent)
+
+
+def get_sistema_db():
+    """Sesion de la BD de sistema (usuarios_autorizados, proyectos). Global,
+    independiente del proyecto activo."""
+    SessionFactory = db_module.get_sistema_session_factory()
+    db = SessionFactory()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+SistemaDep = Annotated[Session, Depends(get_sistema_db)]
 
 
 class MarcarBody(BaseModel):
@@ -88,6 +140,13 @@ class RenombrarProveedorBody(BaseModel):
 class MarcarBulkBody(BaseModel):
     ids: list[int]
     marcado: bool
+
+
+class DescribirFotosBody(BaseModel):
+    # forzar=True: redescribe TAMBIEN los que ya tienen descripcion (para
+    # arreglar descripciones malas). proveedor_id: acota a un proveedor.
+    forzar: bool = False
+    proveedor_id: int | None = None
 
 
 class BorrarBulkBody(BaseModel):
@@ -308,6 +367,8 @@ def _worker_ingest_pdf(
     destino: Path,
     fotos_destino: Path,
     forzar: bool,
+    slug: str,
+    proveedor_forzado: str | None = None,
 ) -> None:
     """Corre la extraccion+ingest del PDF en un hilo aparte y guarda el
     resultado en el registro de jobs.
@@ -318,11 +379,12 @@ def _worker_ingest_pdf(
       - 422 + {ok:False,...}   -> gate (VACIO / REINGESTAR)
       - 500 + {detail:...}     -> fallo del pipeline o error inesperado
     """
-    from app.pdf_pipeline import procesar_pdf, PdfPipelineError
+    from app.pdf_pipeline import procesar_pdf, PdfPipelineError, limpiar_artefactos
 
-    # Sesion nueva propia del hilo (SQLite check_same_thread: se crea y usa
-    # toda dentro de este worker). procesar_pdf hace commit/rollback adentro.
-    SessionFactory = db_module.get_session_factory()
+    # Sesion nueva propia del hilo, ligada a la BD del proyecto `slug` capturado
+    # al encolar (el worker no tiene request/sesion). procesar_pdf hace
+    # commit/rollback adentro.
+    SessionFactory = db_module.get_session_factory(slug)
     try:
         with SessionFactory() as session:
             try:
@@ -331,20 +393,48 @@ def _worker_ingest_pdf(
                     pdf_path=destino,
                     fotos_destino=fotos_destino,
                     forzar_calidad=forzar,
+                    proveedor_forzado=proveedor_forzado,
                 )
             except PdfPipelineError as e:
+                limpiar_artefactos(destino, borrar_pdf=True)
                 jobs.marcar_listo(job_id, 500, {"detail": str(e)})
                 return
             http_status = 200 if resultado.get("ok") else 422
+            # Vision automatica: si el ingest fue OK, describir por imagen los
+            # productos del proveedor recien ingestado que quedaron sin descripcion
+            # real (vacia o placeholder 'Product N'). No falla el ingest si la
+            # vision falla; solo se anota en el resultado.
+            if resultado.get("ok"):
+                try:
+                    prov = buscar_proveedor_existente(session, resultado.get("proveedor") or "")
+                    if prov is not None:
+                        vis = _describir_sin_descripcion(session, slug, proveedor_id=prov.id)
+                        resultado["descripciones_ia"] = {
+                            "descritos": vis["descritos"],
+                            "clasificados": vis.get("clasificados", 0),
+                            "sin_foto": vis["sin_foto"],
+                            "total": vis["total"],
+                            "aviso": vis.get("aviso"),
+                            "error": vis.get("error"),
+                        }
+                except Exception as e:
+                    resultado["descripciones_ia"] = {"error": f"vision fallo: {e}"}
+            # Auto-limpieza de artefactos de trabajo (extract + intermedio). En
+            # exito se conserva el PDF (referenciado como "Cotizacion original");
+            # en fallo del gate se borra tambien el PDF (nada quedo en BD).
+            limpiar_artefactos(destino, borrar_pdf=(http_status != 200))
             jobs.marcar_listo(job_id, http_status, resultado)
     except Exception as e:  # red de seguridad: nunca dejar el job colgado
+        limpiar_artefactos(destino, borrar_pdf=True)
         jobs.marcar_listo(job_id, 500, {"detail": f"Error inesperado: {e}"})
 
 
 @router.post("/api/ingest/pdf", status_code=202)
 async def ingestar_pdf(
+    request: Request,
     file: UploadFile = File(...),
     forzar: bool = Form(False),
+    proveedor_id: int | None = Form(None),
 ):
     """Sube un PDF de cotizacion y arranca su ingest en segundo plano.
 
@@ -374,7 +464,19 @@ async def ingestar_pdf(
             f"Archivo demasiado grande ({len(contenido) // (1024*1024)} MB, max {MAX_PDF_BYTES // (1024*1024)} MB)",
         )
 
-    proyecto = Path(__file__).parent.parent
+    slug = _slug_activo(request)
+
+    # Proveedor destino opcional: si se eligio uno, sus productos se agregan a
+    # ese proveedor (util cuando una propuesta viene partida en varios PDFs).
+    proveedor_forzado = None
+    if proveedor_id is not None:
+        SessionFactory = db_module.get_session_factory(slug)
+        with SessionFactory() as s:
+            pv = s.get(Proveedor, proveedor_id)
+            if pv is None:
+                raise HTTPException(404, f"Proveedor {proveedor_id} no existe en este proyecto")
+            proveedor_forzado = pv.nombre
+
     ingest_dir = _pdf_ingest_dir()
     ingest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -388,14 +490,14 @@ async def ingestar_pdf(
         destino = ingest_dir / f"{stem}_{int(time.time())}{ext}"
     destino.write_bytes(contenido)
 
-    fotos_destino = proyecto / "data" / "fotos"
+    fotos_destino = db_module.fotos_dir_proyecto(slug)
     fotos_destino.mkdir(parents=True, exist_ok=True)
 
     # Lanza el procesamiento en background y devuelve el job_id de inmediato.
     job_id = jobs.crear_job(base)
     hilo = threading.Thread(
         target=_worker_ingest_pdf,
-        args=(job_id, destino, fotos_destino, forzar),
+        args=(job_id, destino, fotos_destino, forzar, slug, proveedor_forzado),
         daemon=True,
     )
     hilo.start()
@@ -418,12 +520,16 @@ async def estado_ingest_pdf(job_id: str):
 
 
 @router.post("/api/productos/{producto_id}/foto")
-async def subir_foto(producto_id: int, db: SesionDep, file: UploadFile = File(...)):
+async def subir_foto(
+    producto_id: int, db: SesionDep, request: Request, file: UploadFile = File(...)
+):
     """Sube o reemplaza la foto principal del producto.
 
     Si ya existia una foto principal: borra el archivo del disco y la fila Foto.
-    Guarda la nueva en data/fotos/ con nombre derivado del producto + epoch.
+    Guarda la nueva en la carpeta de fotos del proyecto activo con nombre
+    derivado del producto + epoch.
     """
+    slug = _slug_activo(request)
     p = db.get(Producto, producto_id)
     if not p:
         raise HTTPException(404, "Producto no existe")
@@ -445,8 +551,7 @@ async def subir_foto(producto_id: int, db: SesionDep, file: UploadFile = File(..
             f"Archivo demasiado grande ({len(contenido)} bytes, max {MAX_FOTO_BYTES})",
         )
 
-    proyecto = Path(__file__).parent.parent
-    fotos_dir = proyecto / "data" / "fotos"
+    fotos_dir = db_module.fotos_dir_proyecto(slug)
     fotos_dir.mkdir(parents=True, exist_ok=True)
 
     # Naming: {producto_id}_user_{epoch}{ext}. El prefijo "_user_" diferencia
@@ -462,9 +567,9 @@ async def subir_foto(producto_id: int, db: SesionDep, file: UploadFile = File(..
     fotos_viejas = db.query(Foto).filter_by(producto_id=producto_id).all()
     for f in fotos_viejas:
         rel = (f.ruta_relativa or "").replace("\\", "/")
-        # rel viene como "fotos/<nombre>"; resolvemos contra data/
+        # rel viene como "fotos/<nombre>"; resolvemos contra la carpeta del proyecto
         if rel.startswith("fotos/"):
-            archivo_viejo = proyecto / "data" / rel
+            archivo_viejo = fotos_dir.parent / rel
             try:
                 if archivo_viejo.exists() and archivo_viejo.resolve().is_relative_to(fotos_dir.resolve()):
                     archivo_viejo.unlink()
@@ -511,6 +616,11 @@ def _fusionar_proveedores(db: Session, origen: Proveedor, destino: Proveedor):
                 sk_destino.add(p.sku)
             movidos += 1
     descartados = _borrar_productos_por_ids(db, a_descartar) if a_descartar else 0
+    # Preservar la referencia al PDF original: si el destino no tiene archivo_pdf,
+    # hereda el del origen para que los productos movidos no pierdan su
+    # "Cotizacion original" al fusionar.
+    if not destino.archivo_pdf and origen.archivo_pdf:
+        destino.archivo_pdf = origen.archivo_pdf
     db.flush()
     db.delete(origen)                          # proveedor origen ya vacio
     return movidos, descartados
@@ -579,7 +689,9 @@ def _localizar_origen(p: Producto) -> dict | None:
       2. Si no, caer al manifest legacy (data/manifest_archivos.json).
     Devuelve None si no se localiza.
     """
-    archivo = (p.proveedor.archivo_pdf or "") if p.proveedor else ""
+    # Preferir el PDF de origen del PRODUCTO (soporta 1 proveedor con varios
+    # PDFs); fallback al del proveedor (legacy / productos previos a la columna).
+    archivo = (p.archivo_pdf or "") or ((p.proveedor.archivo_pdf or "") if p.proveedor else "")
     if not archivo:
         return None
     proyecto = Path(__file__).parent.parent
@@ -632,9 +744,9 @@ def origen_cotizacion(producto_id: int, db: SesionDep):
     if not p:
         raise HTTPException(404, "Producto no existe")
 
-    archivo = (p.proveedor.archivo_pdf or "") if p.proveedor else ""
+    archivo = (p.archivo_pdf or "") or ((p.proveedor.archivo_pdf or "") if p.proveedor else "")
     if not archivo:
-        return {"existe": False, "razon": "Proveedor sin archivo_pdf asociado"}
+        return {"existe": False, "razon": "Producto/proveedor sin archivo_pdf asociado"}
 
     info = _localizar_origen(p)
     if info is None:
@@ -775,6 +887,14 @@ def cotizar_14_pasos(
     from app.cotizador.lookup import resolver_arancel
     arancel = resolver_arancel(db, p.categoria, p.subcategoria, p.material)
 
+    # Estado del arancel de la categoria del producto (para badge en el front:
+    # 'pendiente' = categoria sin fraccion confirmada -> la cotizacion usa default).
+    cat_arancel_estado = None
+    if p.categoria:
+        _cat = db.query(Categoria).filter_by(slug=p.categoria).first()
+        if _cat is not None:
+            cat_arancel_estado = _cat.arancel_estado
+
     # Settings: flete local default 70k MXN (Salo lo confirmo). Descuentos
     # y gastos fijos editables. Cualquier override del query string gana.
     settings = {"flete_local_mxn": flete_local_mxn if flete_local_mxn is not None else 70000}
@@ -873,6 +993,7 @@ def cotizar_14_pasos(
         "tasa_arancelaria_pct": str(res.tasa_arancelaria_pct),
         "tasa_arancelaria_fuente": arancel.fuente,
         "tasa_arancelaria_nota": arancel.nota,
+        "categoria_arancel_estado": cat_arancel_estado,
         "tipo_cambio": str(res.tipo_cambio),
         "margen_nuestro": str(res.margen_nuestro_effective),
         "margen_cliente": str(res.margen_cliente_effective),
@@ -1142,6 +1263,7 @@ def _correr_llenar_formato_hd(
     db: Session,
     xlsx_int: Path,
     salida: Path,
+    base_fotos: str,
     categoria: str | None = "__usar_marcados__",
     params: dict | None = None,
 ) -> Path:
@@ -1150,6 +1272,10 @@ def _correr_llenar_formato_hd(
     Si categoria == '__usar_marcados__' (default): filtra por marcado_cotizar=True.
     Si categoria es None: filtra productos sin categoria.
     Si categoria es str: filtra por esa categoria.
+
+    `base_fotos` es la carpeta del proyecto que contiene 'fotos/' (para resolver
+    las imagenes en el xlsx). `xlsx_int`/`salida` viven en la carpeta de exports
+    del proyecto. `proyecto` (raiz del repo) solo se usa para scripts/formato/cwd.
 
     `params` se pasa a _cotizar_producto como fallback cuando un producto no
     tiene snapshot guardado: TC, margenes, fletes, descuentos de la barra UI.
@@ -1169,7 +1295,7 @@ def _correr_llenar_formato_hd(
         n = generar_formato_hd_desde_marcados(
             session=db,
             xlsx_intermedio=str(xlsx_int),
-            base_fotos=str(proyecto / "data"),
+            base_fotos=base_fotos,
             params=params,
         )
         if n == 0:
@@ -1178,7 +1304,7 @@ def _correr_llenar_formato_hd(
         n = generar_formato_hd_por_categoria(
             session=db,
             xlsx_intermedio=str(xlsx_int),
-            base_fotos=str(proyecto / "data"),
+            base_fotos=base_fotos,
             categoria=categoria,
             params=params,
         )
@@ -1323,13 +1449,18 @@ def _params_exportar(
 @router.get("/exportar")
 def exportar(
     db: SesionDep,
+    request: Request,
     params: dict = Depends(_params_exportar),
 ):
     """Genera HD desde la seleccion actual (compatibilidad)."""
-    proyecto = Path(__file__).parent.parent
-    xlsx_int = proyecto / "_intermedio_seleccion.xlsx"
-    salida = proyecto / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
-    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida, params=params)
+    slug = _slug_activo(request)
+    exports = db_module.exports_dir_proyecto(slug)
+    exports.mkdir(parents=True, exist_ok=True)
+    xlsx_int = exports / "_intermedio_seleccion.xlsx"
+    salida = exports / f"formato-hd-{xlsx_int.stem.lower()}.xlsx"
+    archivo = _correr_llenar_formato_hd(
+        db, xlsx_int, salida, _base_fotos(slug), params=params
+    )
     # Snapshot por cada producto marcado
     _snapshot_productos_exportados(
         db,
@@ -1344,6 +1475,7 @@ def exportar(
 @router.get("/exportar-interno")
 def exportar_interno(
     db: SesionDep,
+    request: Request,
     params: dict = Depends(_params_exportar),
 ):
     """Genera xlsx vertical con TODAS las columnas (foto, FOB, costos, arancel,
@@ -1351,9 +1483,11 @@ def exportar_interno(
     """
     from app.exportar import generar_export_interno_marcados
 
-    proyecto = Path(__file__).parent.parent
+    slug = _slug_activo(request)
+    exports = db_module.exports_dir_proyecto(slug)
+    exports.mkdir(parents=True, exist_ok=True)
     fecha = date.today().strftime("%Y%m%d")
-    salida = proyecto / f"cotizacion-interna-{fecha}.xlsx"
+    salida = exports / f"cotizacion-interna-{fecha}.xlsx"
     if salida.exists():
         try:
             salida.unlink()
@@ -1366,7 +1500,7 @@ def exportar_interno(
     n = generar_export_interno_marcados(
         session=db,
         xlsx_salida=str(salida),
-        base_fotos=str(proyecto / "data"),
+        base_fotos=_base_fotos(slug),
         params=params,
     )
     if n == 0:
@@ -1386,29 +1520,35 @@ def exportar_interno(
 def exportar_categoria(
     categoria: str,
     db: SesionDep,
+    request: Request,
     params: dict = Depends(_params_exportar),
 ):
     """Genera HD para una categoria sin tocar el estado de marcas.
 
     Si categoria == '__sin_categoria__', exporta productos sin categoria.
     """
-    proyecto = Path(__file__).parent.parent
-
-    # Validar que la categoria existe (con productos)
+    # Validar que la categoria existe (con productos) ANTES de resolver el
+    # proyecto: un 404 de categoria no debe quedar tapado por el 400 de proyecto.
     q = _aplicar_filtro_categoria(db.query(Producto), categoria)
     n_en_cat = q.count()
     if n_en_cat == 0:
         raise HTTPException(404, f"Categoria '{categoria}' no tiene productos.")
 
+    slug = _slug_activo(request)
+    exports = db_module.exports_dir_proyecto(slug)
+    exports.mkdir(parents=True, exist_ok=True)
+
     # Nombre con fecha del dia (no del correo origen, como dice el plan)
     cat_slug = "sin-categoria" if categoria == SIN_CATEGORIA else categoria
     fecha = date.today().strftime("%Y%m%d")
-    xlsx_int = proyecto / f"_intermedio_{cat_slug}-{fecha}.xlsx"
-    salida = proyecto / f"formato-hd-{cat_slug}-{fecha}.xlsx"
+    xlsx_int = exports / f"_intermedio_{cat_slug}-{fecha}.xlsx"
+    salida = exports / f"formato-hd-{cat_slug}-{fecha}.xlsx"
 
     # Pasamos categoria=None si el cliente uso el sentinela __sin_categoria__
     cat_filter = None if categoria == SIN_CATEGORIA else categoria
-    archivo = _correr_llenar_formato_hd(db, xlsx_int, salida, categoria=cat_filter, params=params)
+    archivo = _correr_llenar_formato_hd(
+        db, xlsx_int, salida, _base_fotos(slug), categoria=cat_filter, params=params
+    )
     # Snapshot por cada producto exportado en la categoria
     _snapshot_productos_exportados(
         db,
@@ -1421,7 +1561,7 @@ def exportar_categoria(
 
 
 @router.get("/exportar-pd")
-def exportar_pd(db: SesionDep):
+def exportar_pd(db: SesionDep, request: Request):
     """Genera el formato Pet PD (Product Dimension) con productos marcados.
 
     No usa el motor de cotizacion (no toma TC/margenes/etc): solo datos
@@ -1429,9 +1569,11 @@ def exportar_pd(db: SesionDep):
     """
     from app.exportar import generar_export_pd_desde_marcados
 
-    proyecto = Path(__file__).parent.parent
+    slug = _slug_activo(request)
+    exports = db_module.exports_dir_proyecto(slug)
+    exports.mkdir(parents=True, exist_ok=True)
     fecha = date.today().strftime("%Y%m%d")
-    salida = proyecto / f"export-pd-marcados-{fecha}.xlsx"
+    salida = exports / f"export-pd-marcados-{fecha}.xlsx"
     if salida.exists():
         try:
             salida.unlink()
@@ -1440,7 +1582,7 @@ def exportar_pd(db: SesionDep):
                 500,
                 f"No puedo borrar el archivo anterior (esta abierto en Excel?): {salida.name}",
             )
-    n = generar_export_pd_desde_marcados(db, str(salida), str(proyecto / "data"))
+    n = generar_export_pd_desde_marcados(db, str(salida), _base_fotos(slug))
     if n == 0:
         raise HTTPException(400, "No hay productos marcados.")
     return FileResponse(
@@ -1451,18 +1593,20 @@ def exportar_pd(db: SesionDep):
 
 
 @router.get("/exportar-pd/{categoria}")
-def exportar_pd_categoria(categoria: str, db: SesionDep):
+def exportar_pd_categoria(categoria: str, db: SesionDep, request: Request):
     """Genera Pet PD para una categoria sin tocar marcas.
 
     Si categoria == '__sin_categoria__', exporta productos sin categoria.
     """
     from app.exportar import generar_export_pd_por_categoria
 
-    proyecto = Path(__file__).parent.parent
+    slug = _slug_activo(request)
+    exports = db_module.exports_dir_proyecto(slug)
+    exports.mkdir(parents=True, exist_ok=True)
     cat_filter = None if categoria == SIN_CATEGORIA else categoria
     cat_slug = "sin-categoria" if cat_filter is None else categoria
     fecha = date.today().strftime("%Y%m%d")
-    salida = proyecto / f"export-pd-{cat_slug}-{fecha}.xlsx"
+    salida = exports / f"export-pd-{cat_slug}-{fecha}.xlsx"
     if salida.exists():
         try:
             salida.unlink()
@@ -1471,7 +1615,7 @@ def exportar_pd_categoria(categoria: str, db: SesionDep):
                 500,
                 f"No puedo borrar el archivo anterior (esta abierto en Excel?): {salida.name}",
             )
-    n = generar_export_pd_por_categoria(db, str(salida), str(proyecto / "data"), cat_filter)
+    n = generar_export_pd_por_categoria(db, str(salida), _base_fotos(slug), cat_filter)
     if n == 0:
         raise HTTPException(404, f"No hay productos en categoria {categoria!r}.")
     return FileResponse(
@@ -1943,7 +2087,9 @@ def borrar_costo(producto_id: int, costo_id: int, db: SesionDep):
 
 class CompetenciaBuscarBody(BaseModel):
     query: str | None = None
-    marketplaces: list[str] | None = None
+    # Sitio(s) extra a agregar a esta busqueda (dominios o URLs, separados por
+    # coma/espacio). Se SUMAN a los sitios configurados en la categoria.
+    sitios_extra: str | None = None
 
 
 class CompetidorItem(BaseModel):
@@ -1993,28 +2139,45 @@ def _stats_precios(items: list[CompetidorListing]) -> dict | None:
     }
 
 
+# Marketplaces canonicos (van primero en el resumen); el resto son sitios extra.
+_MP_CANONICOS = ("amazon_mx", "mercadolibre_mx", "petco_mx")
+
+
 def _resumen_competencia(items: list[CompetidorListing]) -> dict:
-    amazon = [c for c in items if c.marketplace == "amazon_mx"]
-    meli = [c for c in items if c.marketplace == "mercadolibre_mx"]
-    petco = [c for c in items if c.marketplace == "petco_mx"]
-    return {
-        "amazon_mx": _stats_precios(amazon),
-        "mercadolibre_mx": _stats_precios(meli),
-        "petco_mx": _stats_precios(petco),
-        "global": _stats_precios(items),
-    }
+    """Stats de precio por marketplace presente + global. Los canonicos primero."""
+    grupos: dict[str, list] = {}
+    for c in items:
+        grupos.setdefault(c.marketplace, []).append(c)
+    claves = [m for m in _MP_CANONICOS if m in grupos] + sorted(
+        m for m in grupos if m not in _MP_CANONICOS
+    )
+    out = {m: _stats_precios(grupos[m]) for m in claves}
+    out["global"] = _stats_precios(items)
+    return out
 
 
 @router.post("/api/productos/{producto_id}/competencia/buscar")
 def buscar_competencia(producto_id: int, body: CompetenciaBuscarBody, db: SesionDep):
-    """Busca candidatos de competencia via Claude web_search. NO persiste."""
+    """Busca candidatos de competencia via Claude web_search. NO persiste.
+
+    Los sitios donde busca salen de la categoria del producto (columna
+    Categoria.competencia_sitios); NULL/vacio => los 3 default. El campo
+    `sitios_extra` del request se SUMA a esos sitios.
+    """
     from app import competencia
 
     p = db.get(Producto, producto_id)
     if not p:
         raise HTTPException(404, "Producto no existe")
     query = (body.query or "").strip() or competencia.construir_query(p)
-    return competencia.buscar_candidatos(query, body.marketplaces)
+
+    sitios_categoria = None
+    if p.categoria:
+        cat = db.query(Categoria).filter_by(slug=p.categoria).first()
+        if cat:
+            sitios_categoria = cat.competencia_sitios
+    dominios = competencia.resolver_dominios(sitios_categoria, body.sitios_extra)
+    return competencia.buscar_candidatos(query, dominios)
 
 
 @router.get("/api/productos/{producto_id}/competencia")
@@ -2162,6 +2325,7 @@ import re as _re
 
 
 SLUG_VALIDO = _re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_FRACCION_RE = _re.compile(r"^\d{4}\.\d{2}\.\d{2}$")  # TIGIE NNNN.NN.NN
 
 
 class CategoriaBody(BaseModel):
@@ -2178,6 +2342,31 @@ class PatronDescarteBody(BaseModel):
     nota: str | None = None
 
 
+class PropuestaItem(BaseModel):
+    slug: str
+    orden: int = 100
+    keywords: list[str] = []
+    fraccion: str | None = None
+    tasa_pct: float | None = None
+    arancel_nota: str | None = None
+    arancel_fuente_url: str | None = None
+
+
+class AplicarPropuestaBody(BaseModel):
+    items: list[PropuestaItem]
+
+
+class ArancelCategoriaBody(BaseModel):
+    fraccion: str | None = None
+    tasa_pct: float | None = None
+    arancel_nota: str | None = None
+
+
+class CompetenciaSitiosBody(BaseModel):
+    # CSV de dominios o URLs; vacio => la categoria usa los 3 sitios default.
+    competencia_sitios: str | None = None
+
+
 def _cat_a_dict(c: Categoria, conteo_productos: int) -> dict:
     return {
         "id": c.id,
@@ -2185,6 +2374,12 @@ def _cat_a_dict(c: Categoria, conteo_productos: int) -> dict:
         "orden": c.orden,
         "keywords": sorted(kw.keyword for kw in c.keywords),
         "productos": conteo_productos,
+        "fraccion": c.fraccion,
+        "tasa_pct": c.tasa_pct,
+        "arancel_estado": c.arancel_estado,
+        "arancel_nota": c.arancel_nota,
+        "arancel_fuente_url": c.arancel_fuente_url,
+        "competencia_sitios": c.competencia_sitios,
     }
 
 
@@ -2352,16 +2547,17 @@ def patrones_eliminar(pat_id: int, db: SesionDep):
 
 
 @router.post("/api/catalogo/reclasificar-sin-categoria")
-def reclasificar_sin_categoria(db: SesionDep):
+def reclasificar_sin_categoria(db: SesionDep, request: Request):
     """Aplica el clasificador a productos con categoria IS NULL.
 
     No toca productos ya clasificados. Devuelve {asignados, sin_match}.
     """
+    slug = _slug_activo(request)
     invalidar_cache()
     asignados = 0
     sin_match = 0
     for p in db.query(Producto).filter(Producto.categoria.is_(None)).all():
-        cat = clasificar_descripcion(p.descripcion)
+        cat = clasificar_descripcion(p.descripcion, slug)
         if cat is None:
             sin_match += 1
         else:
@@ -2369,6 +2565,464 @@ def reclasificar_sin_categoria(db: SesionDep):
             asignados += 1
     db.commit()
     return {"asignados": asignados, "sin_match": sin_match}
+
+
+# ------------------------------------------------------------------
+# Bootstrapping de catalogo asistido por IA (propuesta -> revision -> aplicar)
+# ------------------------------------------------------------------
+
+# Placeholder de descripcion que dejan algunos PDFs cuando el extractor no
+# encuentra un nombre real (ej. "Product 223"). Se tratan como "sin descripcion".
+_DESC_PLACEHOLDER_RE = _re.compile(r"^product\s+\d+$", _re.IGNORECASE)
+
+
+def _necesita_descripcion(desc: str | None) -> bool:
+    """True si la descripcion esta vacia o es un placeholder tipo 'Product 223'."""
+    d = (desc or "").strip()
+    return (not d) or bool(_DESC_PLACEHOLDER_RE.match(d))
+
+
+def _sin_descripcion_filtro():
+    """Clausula SQLAlchemy: descripcion vacia o placeholder 'Product N'."""
+    return (
+        Producto.descripcion.is_(None)
+        | (func.trim(Producto.descripcion) == "")
+        | Producto.descripcion.op("GLOB")("[Pp]roduct [0-9]*")
+    )
+
+
+def _descripciones_proyecto(session) -> list[str]:
+    """Descripciones utiles del proyecto para la propuesta IA.
+
+    Excluye '_descartar', vacias y placeholders 'Product N'.
+    """
+    rows = (
+        session.query(Producto.descripcion)
+        .filter(Producto.descripcion.isnot(None))
+        .filter((Producto.categoria.is_(None)) | (Producto.categoria != "_descartar"))
+        .distinct()
+        .all()
+    )
+    return [d for (d,) in rows if d and not _necesita_descripcion(d)]
+
+
+def _describir_sin_descripcion(
+    session, slug: str, proveedor_id: int | None = None, forzar: bool = False
+) -> dict:
+    """Corre vision sobre productos con foto y persiste descripcion + tags.
+
+    Por defecto solo toca los que NO tienen descripcion real (vacia o
+    'Product N'). Con forzar=True redescribe TAMBIEN los que ya tienen una
+    (para arreglar descripciones malas). Opcionalmente acotado a un proveedor.
+    La categoria solo se rellena si esta vacia (no pisa ajustes manuales).
+    Devuelve {descritos, clasificados, sin_foto, total, aviso, error}.
+    """
+    from app import catalogo_ia
+
+    base = Path(_base_fotos(slug))
+    q = session.query(Producto)
+    if not forzar:
+        q = q.filter(_sin_descripcion_filtro())
+    if proveedor_id is not None:
+        q = q.filter(Producto.proveedor_id == proveedor_id)
+    prods = q.all()
+
+    items, sin_foto = [], 0
+    for p in prods:
+        foto = (
+            session.query(Foto)
+            .filter_by(producto_id=p.id)
+            .order_by(Foto.es_principal.desc())
+            .first()
+        )
+        ruta = (base / foto.ruta_relativa) if foto else None
+        if ruta is None or not ruta.exists():
+            sin_foto += 1
+            continue
+        items.append({"producto_id": p.id, "sku": p.sku,
+                      "medidas": p.medidas, "path": str(ruta)})
+
+    if not items:
+        return {"descritos": 0, "sin_foto": sin_foto, "total": len(prods),
+                "aviso": None, "error": None}
+
+    res = catalogo_ia.describir_fotos(items)
+    if not res.get("ok"):
+        return {"descritos": 0, "sin_foto": sin_foto, "total": len(prods),
+                "aviso": None, "error": res.get("error")}
+
+    descritos = 0
+    descritos_ids = []
+    for pid, d in res.get("resultados", {}).items():
+        p = session.get(Producto, pid)
+        if p is None:
+            continue
+        p.descripcion = d["descripcion"]
+        if d.get("tags"):
+            p.tags = ", ".join(d["tags"])
+        descritos += 1
+        descritos_ids.append(pid)
+    session.commit()
+
+    # Clasificar los productos recien descritos que sigan sin categoria, usando
+    # el catalogo del proyecto (keywords). Si el catalogo esta vacio, quedan sin
+    # categoria hasta que se proponga/defina uno.
+    invalidar_cache()
+    clasificados = 0
+    for pid in descritos_ids:
+        p = session.get(Producto, pid)
+        if p is None or p.categoria is not None:
+            continue
+        cat = clasificar_descripcion(p.descripcion, slug)
+        if cat is not None:
+            p.categoria = cat
+            clasificados += 1
+    session.commit()
+
+    return {"descritos": descritos, "clasificados": clasificados,
+            "sin_foto": sin_foto, "total": len(prods),
+            "aviso": res.get("aviso"), "error": None}
+
+
+def _worker_describir_fotos(
+    job_id: str, slug: str, proveedor_id: int | None = None, forzar: bool = False
+) -> None:
+    """Genera descripcion + tags por vision para productos con foto (job async).
+    Por defecto solo los que no tienen descripcion real; con forzar=True tambien
+    redescribe los que ya tienen una. Sesion propia ligada al slug.
+    """
+    try:
+        SessionFactory = db_module.get_session_factory(slug)
+        with SessionFactory() as session:
+            r = _describir_sin_descripcion(session, slug, proveedor_id, forzar)
+        if r["error"]:
+            jobs.marcar_listo(job_id, 422, {"ok": False, "error": r["error"]})
+            return
+        jobs.marcar_listo(job_id, 200, {
+            "ok": True, "descritos": r["descritos"],
+            "clasificados": r.get("clasificados", 0), "sin_foto": r["sin_foto"],
+            "total_sin_descripcion": r["total"], "aviso": r["aviso"],
+        })
+    except Exception as e:  # red de seguridad
+        jobs.marcar_listo(job_id, 500, {"ok": False, "error": f"Error inesperado: {e}"})
+
+
+@router.post("/api/catalogo/describir-fotos", status_code=202)
+def describir_fotos_ia(request: Request, db: SesionDep, body: DescribirFotosBody | None = None):
+    """Arranca la descripcion por vision de productos con foto (async).
+
+    Por defecto solo los que NO tienen descripcion real (util para catalogos que
+    solo traen SKU + foto + medidas). Con `forzar`=true redescribe TAMBIEN los que
+    ya tienen una (para arreglar descripciones malas), y `proveedor_id` acota el
+    alcance. Rellena `descripcion` + `tags` y categoria (solo si estaba vacia).
+    202 + job_id.
+    """
+    slug = _slug_activo(request)
+    forzar = bool(body and body.forzar)
+    proveedor_id = body.proveedor_id if body else None
+    q = db.query(func.count(func.distinct(Producto.id))).join(
+        Foto, Foto.producto_id == Producto.id
+    )
+    if not forzar:
+        q = q.filter(_sin_descripcion_filtro())
+    if proveedor_id is not None:
+        q = q.filter(Producto.proveedor_id == proveedor_id)
+    n = q.scalar()
+    if not n:
+        raise HTTPException(
+            400,
+            "No hay productos con foto en el alcance seleccionado."
+            if forzar else
+            "No hay productos sin descripcion que tengan foto.",
+        )
+    job_id = jobs.crear_job("describir-fotos")
+    hilo = threading.Thread(
+        target=_worker_describir_fotos,
+        args=(job_id, slug, proveedor_id, forzar),
+        daemon=True,
+    )
+    hilo.start()
+    return {"job_id": job_id, "estado": "procesando", "pendientes": int(n)}
+
+
+@router.get("/api/catalogo/describir-fotos/status/{job_id}")
+def estado_describir_fotos(job_id: str):
+    job = jobs.obtener_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Job no encontrado (puede que el servidor se haya reiniciado).")
+    return job
+
+
+@router.post("/api/productos/{producto_id}/redescribir")
+def redescribir_producto(producto_id: int, request: Request, db: SesionDep):
+    """Regenera la descripcion + tags de UN producto con IA a partir de su foto,
+    y lo categoriza si no tiene categoria. Sincrono (una imagen). Sirve para
+    arreglar descripciones malas producto por producto desde el panel de detalle.
+    """
+    from app import catalogo_ia
+
+    slug = _slug_activo(request)
+    p = db.get(Producto, producto_id)
+    if not p:
+        raise HTTPException(404, "Producto no existe")
+
+    foto = (
+        db.query(Foto)
+        .filter_by(producto_id=p.id)
+        .order_by(Foto.es_principal.desc())
+        .first()
+    )
+    ruta = (Path(_base_fotos(slug)) / foto.ruta_relativa) if foto else None
+    if ruta is None or not ruta.exists():
+        raise HTTPException(400, "El producto no tiene foto; no se puede describir con IA.")
+
+    res = catalogo_ia.describir_fotos(
+        [{"producto_id": p.id, "sku": p.sku, "medidas": p.medidas, "path": str(ruta)}]
+    )
+    if not res.get("ok"):
+        raise HTTPException(502, res.get("error") or "La IA no pudo describir el producto.")
+    d = res.get("resultados", {}).get(p.id)
+    if not d:
+        raise HTTPException(502, res.get("aviso") or "La IA no devolvio descripcion.")
+
+    p.descripcion = d["descripcion"]
+    if d.get("tags"):
+        p.tags = ", ".join(d["tags"])
+    db.commit()
+
+    # Categoria: solo si esta vacia (no pisa ajustes manuales). Usa el catalogo
+    # del proyecto (keywords); si esta vacio, queda sin categoria.
+    invalidar_cache()
+    clasificado = None
+    if p.categoria is None:
+        cat = clasificar_descripcion(p.descripcion, slug)
+        if cat is not None:
+            p.categoria = cat
+            clasificado = cat
+            db.commit()
+
+    return {
+        "ok": True,
+        "producto_id": p.id,
+        "descripcion": p.descripcion,
+        "tags": p.tags,
+        "categoria": p.categoria,
+        "clasificado": clasificado,
+        "aviso": res.get("aviso"),
+    }
+
+
+@router.get("/api/mantenimiento/indigest")
+def analizar_indigest():
+    """Previsualiza (sin borrar) los artefactos de trabajo y PDFs huerfanos que
+    se pueden purgar de la carpeta de ingesta."""
+    from app import mantenimiento
+    return mantenimiento.analizar()
+
+
+@router.post("/api/mantenimiento/indigest/limpiar")
+def limpiar_indigest():
+    """Purga extracciones de Adobe (_adobe_extract_*), intermedios y PDFs
+    huerfanos de intentos fallidos. Conserva los PDFs referenciados por productos
+    ('Cotizacion original')."""
+    from app import mantenimiento
+    return mantenimiento.limpiar()
+
+
+def _worker_proponer_catalogo(job_id: str, slug: str) -> None:
+    """Corre la propuesta de catalogo (categorias + aranceles IA) en un hilo.
+
+    No persiste nada: deja la propuesta en el registro de jobs para que el front
+    la muestre. Sesion propia ligada al slug capturado al encolar.
+    """
+    from app import catalogo_ia
+
+    try:
+        SessionFactory = db_module.get_session_factory(slug)
+        with SessionFactory() as session:
+            descripciones = _descripciones_proyecto(session)
+            # Catalogo actual: la IA lo reutiliza (no duplica categorias al re-proponer).
+            existentes = [
+                {"slug": c.slug, "keywords": [kw.keyword for kw in c.keywords]}
+                for c in session.query(Categoria).order_by(Categoria.orden.asc()).all()
+            ]
+        # Las llamadas a la IA no necesitan la BD; corren fuera de la sesion.
+        propuesta = catalogo_ia.proponer_catalogo(descripciones, categorias_existentes=existentes)
+        http_status = 200 if propuesta.get("ok") else 422
+        jobs.marcar_listo(job_id, http_status, propuesta)
+    except Exception as e:  # red de seguridad: nunca dejar el job colgado
+        jobs.marcar_listo(job_id, 500, {"ok": False, "error": f"Error inesperado: {e}"})
+
+
+@router.post("/api/catalogo/proponer-ia", status_code=202)
+def proponer_catalogo_ia(request: Request, db: SesionDep):
+    """Arranca en segundo plano la propuesta de catalogo con IA.
+
+    Responde 202 + job_id de inmediato (la fase con web_search tarda). El front
+    consulta GET /api/catalogo/proponer-ia/status/{job_id}.
+    """
+    slug = _slug_activo(request)
+    total = db.query(func.count(Producto.id)).scalar() or 0
+    # Contamos solo productos con descripcion textual: la propuesta se basa en
+    # descripciones. Hay catalogos (SKU + foto + medidas, sin nombre) donde todas
+    # vienen vacias -> no hay nada que analizar por texto.
+    n = (
+        db.query(func.count(Producto.id))
+        .filter(Producto.descripcion.isnot(None))
+        .filter(func.trim(Producto.descripcion) != "")
+        .filter((Producto.categoria.is_(None)) | (Producto.categoria != "_descartar"))
+        .scalar()
+    )
+    if not n:
+        if total:
+            raise HTTPException(
+                400,
+                f"Los {total} productos del proyecto no tienen descripcion textual "
+                "(p. ej. catalogo por SKU + foto + medidas). La propuesta por IA se "
+                "basa en descripciones; no hay nada que analizar por texto.",
+            )
+        raise HTTPException(400, "No hay productos para analizar. Ingesta productos primero.")
+    job_id = jobs.crear_job("propuesta-catalogo")
+    hilo = threading.Thread(
+        target=_worker_proponer_catalogo, args=(job_id, slug), daemon=True
+    )
+    hilo.start()
+    return {"job_id": job_id, "estado": "procesando"}
+
+
+@router.get("/api/catalogo/proponer-ia/status/{job_id}")
+def estado_proponer_catalogo(job_id: str):
+    """Estado del job de propuesta (mismo contrato que el status de ingest)."""
+    job = jobs.obtener_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Job no encontrado (puede que el servidor se haya reiniciado).")
+    return job
+
+
+@router.post("/api/catalogo/aplicar-propuesta")
+def aplicar_propuesta(body: AplicarPropuestaBody, db: SesionDep):
+    """Persiste las categorias revisadas por el usuario (upsert por slug).
+
+    Una categoria con fraccion valida (NNNN.NN.NN) + tasa queda 'confirmado' (a
+    partir de aqui SI afecta la cotizacion); las demas 'pendiente'. Reemplaza las
+    keywords. Devuelve conteos + reclasificar:True para que el front reclasifique.
+    """
+    from datetime import datetime
+
+    if not body.items:
+        raise HTTPException(400, "Sin items para aplicar.")
+
+    creadas = actualizadas = confirmadas = pendientes = 0
+    for it in body.items:
+        slug = _validar_slug(it.slug)
+        frac = (it.fraccion or "").strip() or None
+        if frac and not _FRACCION_RE.match(frac):
+            frac = None  # formato invalido -> se trata como sin fraccion
+        tasa = it.tasa_pct
+        if frac and tasa is not None:
+            estado = "confirmado"
+            confirmadas += 1
+        else:
+            estado = "pendiente"
+            pendientes += 1
+
+        cat = db.query(Categoria).filter_by(slug=slug).first()
+        if cat is None:
+            cat = Categoria(slug=slug, orden=it.orden)
+            db.add(cat)
+            db.flush()
+            creadas += 1
+        else:
+            cat.orden = it.orden
+            actualizadas += 1
+
+        cat.fraccion = frac
+        cat.tasa_pct = tasa
+        cat.arancel_estado = estado
+        cat.arancel_nota = (it.arancel_nota or "").strip() or None
+        cat.arancel_fuente_url = (it.arancel_fuente_url or "").strip() or None
+        cat.arancel_actualizado_en = datetime.utcnow()
+
+        # Reemplazar keywords (normalizadas: lowercase, sin duplicados/vacios).
+        limpias, vistas = [], set()
+        for kw in it.keywords:
+            k = (kw or "").strip().lower()
+            if k and k not in vistas:
+                vistas.add(k)
+                limpias.append(k)
+        db.query(CategoriaKeyword).filter_by(categoria_id=cat.id).delete()
+        for k in limpias:
+            db.add(CategoriaKeyword(categoria_id=cat.id, keyword=k))
+
+    db.commit()
+    invalidar_cache()
+    return {
+        "creadas": creadas,
+        "actualizadas": actualizadas,
+        "confirmadas": confirmadas,
+        "pendientes": pendientes,
+        "reclasificar": True,
+    }
+
+
+@router.patch("/api/catalogo/categorias/{cat_id}/arancel")
+def editar_arancel_categoria(cat_id: int, body: ArancelCategoriaBody, db: SesionDep):
+    """Fija/edita a mano la fraccion+tasa de una categoria (para las pendientes).
+
+    Con fraccion valida + tasa queda 'confirmado'; si no, 'pendiente'.
+    """
+    from datetime import datetime
+
+    c = db.get(Categoria, cat_id)
+    if not c:
+        raise HTTPException(404, "Categoria no existe")
+    frac = (body.fraccion or "").strip() or None
+    if frac and not _FRACCION_RE.match(frac):
+        raise HTTPException(422, "Fraccion invalida: usa el formato NNNN.NN.NN")
+    c.fraccion = frac
+    c.tasa_pct = body.tasa_pct
+    c.arancel_estado = "confirmado" if (frac and body.tasa_pct is not None) else "pendiente"
+    c.arancel_nota = (body.arancel_nota or "").strip() or None
+    c.arancel_actualizado_en = datetime.utcnow()
+    db.commit()
+    n = (
+        db.query(func.count(Producto.id))
+        .filter(Producto.categoria == c.slug)
+        .scalar()
+    )
+    db.refresh(c)
+    return _cat_a_dict(c, int(n or 0))
+
+
+@router.patch("/api/catalogo/categorias/{cat_id}/competencia-sitios")
+def editar_competencia_sitios(cat_id: int, body: CompetenciaSitiosBody, db: SesionDep):
+    """Fija/edita los sitios donde buscar competencia para una categoria.
+
+    Recibe dominios o URLs (separados por coma/espacio); se normalizan a hosts
+    limpios, sin duplicados. Vacio => la categoria usa los 3 sitios default.
+    """
+    from datetime import datetime
+
+    from app import competencia
+
+    c = db.get(Categoria, cat_id)
+    if not c:
+        raise HTTPException(404, "Categoria no existe")
+    dominios: list[str] = []
+    for token in _re.split(r"[,\s;]+", body.competencia_sitios or ""):
+        host = competencia._host_de_url(token)
+        if host and host not in dominios:
+            dominios.append(host)
+    c.competencia_sitios = ",".join(dominios) or None
+    c.competencia_actualizado_en = datetime.utcnow()
+    db.commit()
+    n = (
+        db.query(func.count(Producto.id))
+        .filter(Producto.categoria == c.slug)
+        .scalar()
+    )
+    db.refresh(c)
+    return _cat_a_dict(c, int(n or 0))
 
 
 @router.get("/categorias", response_class=HTMLResponse)
@@ -2379,10 +3033,21 @@ def pagina_categorias(request: Request, db: SesionDep):
         .filter(Producto.categoria.is_(None))
         .scalar()
     )
+    # Productos sin descripcion textual que tienen foto (candidatos a describir
+    # por vision). Ej. catalogos SKU + foto + medidas sin nombre.
+    sin_descripcion = (
+        db.query(func.count(func.distinct(Producto.id)))
+        .join(Foto, Foto.producto_id == Producto.id)
+        .filter(_sin_descripcion_filtro())
+        .scalar()
+    )
     return TEMPLATES.TemplateResponse(
         request,
         "categorias.html",
-        {"productos_sin_categoria": int(sin_categoria or 0)},
+        {
+            "productos_sin_categoria": int(sin_categoria or 0),
+            "productos_sin_descripcion": int(sin_descripcion or 0),
+        },
     )
 
 
@@ -2417,7 +3082,7 @@ def _email_session(request: Request) -> str | None:
 
 
 @router.get("/api/usuarios")
-def listar_usuarios(db: SesionDep):
+def listar_usuarios(db: SistemaDep):
     items = (
         db.query(UsuarioAutorizado)
         .order_by(UsuarioAutorizado.activo.desc(), UsuarioAutorizado.email)
@@ -2427,7 +3092,7 @@ def listar_usuarios(db: SesionDep):
 
 
 @router.post("/api/usuarios")
-def crear_usuario(body: UsuarioCreateBody, db: SesionDep):
+def crear_usuario(body: UsuarioCreateBody, db: SistemaDep):
     email = (body.email or "").strip().lower()
     if not email or "@" not in email or "." not in email.split("@", 1)[1]:
         raise HTTPException(400, "Email invalido")
@@ -2446,7 +3111,7 @@ def crear_usuario(body: UsuarioCreateBody, db: SesionDep):
 
 @router.patch("/api/usuarios/{usuario_id}")
 def editar_usuario(
-    usuario_id: int, body: UsuarioPatchBody, request: Request, db: SesionDep
+    usuario_id: int, body: UsuarioPatchBody, request: Request, db: SistemaDep
 ):
     u = db.get(UsuarioAutorizado, usuario_id)
     if not u:
@@ -2477,7 +3142,7 @@ def editar_usuario(
 
 
 @router.delete("/api/usuarios/{usuario_id}")
-def borrar_usuario(usuario_id: int, request: Request, db: SesionDep):
+def borrar_usuario(usuario_id: int, request: Request, db: SistemaDep):
     u = db.get(UsuarioAutorizado, usuario_id)
     if not u:
         raise HTTPException(404, "Usuario no encontrado")

@@ -2,8 +2,13 @@
 CLI para ingestar todos los _intermedio_*.xlsx que esten en la raiz del proyecto
 a la BD. Tambien permite ingestar uno solo por nombre.
 
+Multi-proyecto: todas las operaciones actuan sobre la BD de un proyecto. El
+proyecto se elige con --proyecto <slug> o la env var PROYECTO (default:
+'principal'). La BD vive en data/proyectos/<slug>/productos.db y las fotos en
+data/proyectos/<slug>/fotos/.
+
 Uso:
-    python -m app.cli init                  # crear BD vacia
+    python -m app.cli init                  # crear BD (esquema) del proyecto
     python -m app.cli ingestar              # todos los _intermedio_*.xlsx
     python -m app.cli ingestar archivo.xlsx # uno especifico
     python -m app.cli ingestar --force      # saltea el gate de calidad
@@ -12,6 +17,8 @@ Uso:
     python -m app.cli validar [prov_id]     # reporte de calidad (default: ultimo)
     python -m app.cli seed-categorias       # cargar config/categorias.yml a BD
     python -m app.cli seed-aranceles        # cargar config/aranceles.yml a BD (--reset opcional)
+    python -m app.cli proponer-catalogo     # propuesta de catalogo con IA (dry-run, no persiste)
+    python -m app.cli --proyecto cliente-a stats   # elegir proyecto explicito
 """
 
 import os
@@ -20,7 +27,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from app.db import get_session_factory, init_db, DB_PATH
+from app import db as db_module
 from app.ingest import ingestar_xlsx_intermedio, resolver_nombre_proveedor
 from app.modelos import Proveedor, Producto
 from app.calidad import (
@@ -31,7 +38,10 @@ from app.calidad import (
 
 
 PROYECTO_ROOT = Path(__file__).parent.parent
-FOTOS_DIR = PROYECTO_ROOT / "data" / "fotos"
+
+
+def _fotos_dir(slug: str) -> Path:
+    return db_module.fotos_dir_proyecto(slug)
 
 
 def _pdf_ingest_dir() -> Path:
@@ -64,22 +74,24 @@ def _resolver_archivo(nombre: str, exts: tuple[str, ...] | None = None) -> Path 
     return None
 
 
-def cmd_init():
-    init_db()
-    print(f"BD inicializada en: {DB_PATH}")
+def cmd_init(slug: str):
+    db_module.init_proyecto_db(slug)
+    print(f"BD inicializada en: {db_module.ruta_bd_proyecto(slug)}")
 
 
-def cmd_ingestar(patron: str | None = None, *, gate: bool = True):
-    """Ingesta _intermedio_*.xlsx a la BD.
+def cmd_ingestar(slug: str, patron: str | None = None, *, gate: bool = True):
+    """Ingesta _intermedio_*.xlsx a la BD del proyecto `slug`.
 
     Si gate=True (default), tras ingestar valida calidad y hace rollback
     automatico si el veredicto es REINGESTAR. Las fotos fisicas creadas en
     la corrida tambien se borran del disco.
     """
-    if not DB_PATH.exists():
-        init_db()
+    db_path = db_module.ruta_bd_proyecto(slug)
+    fotos_dir = _fotos_dir(slug)
+    if not db_path.exists():
+        db_module.init_proyecto_db(slug)
 
-    SessionFactory = get_session_factory()
+    SessionFactory = db_module.get_session_factory(slug)
     s = SessionFactory()
 
     ingest_dir = _pdf_ingest_dir()
@@ -107,13 +119,13 @@ def cmd_ingestar(patron: str | None = None, *, gate: bool = True):
         nombre = resolver_nombre_proveedor(str(xlsx))
         print(f"  Proveedor: {nombre}")
         # Snapshot de fotos fisicas pre-ingest para poder limpiar si hay rollback
-        fotos_antes = set(FOTOS_DIR.glob("*")) if FOTOS_DIR.exists() else set()
+        fotos_antes = set(fotos_dir.glob("*")) if fotos_dir.exists() else set()
         try:
             n = ingestar_xlsx_intermedio(
                 session=s,
                 xlsx_path=str(xlsx),
                 nombre_proveedor=None,  # lo resuelve ingest desde .meta.json
-                fotos_destino=str(FOTOS_DIR),
+                fotos_destino=str(fotos_dir),
             )
 
             if gate:
@@ -126,7 +138,7 @@ def cmd_ingestar(patron: str | None = None, *, gate: bool = True):
                 info = _calcular_veredicto(prods)
                 if info["veredicto"] == "REINGESTAR":
                     s.rollback()
-                    fotos_nuevas = set(FOTOS_DIR.glob("*")) - fotos_antes
+                    fotos_nuevas = set(fotos_dir.glob("*")) - fotos_antes
                     for f in fotos_nuevas:
                         try:
                             f.unlink()
@@ -158,8 +170,8 @@ def cmd_ingestar(patron: str | None = None, *, gate: bool = True):
     s.close()
 
 
-def cmd_pdf(pdf_path: str):
-    """Procesa un PDF nuevo y lo ingesta a la BD.
+def cmd_pdf(slug: str, pdf_path: str):
+    """Procesa un PDF nuevo y lo ingesta a la BD del proyecto `slug`.
 
     El PDF puede pasarse como ruta absoluta, relativa al CWD, o solo el nombre
     (se buscara en PDF_INGEST_DIR, por defecto ./indigest-pdf/).
@@ -195,11 +207,11 @@ def cmd_pdf(pdf_path: str):
         print(f"No se genero _intermedio_*.xlsx en {carpeta_pdf}")
         return
 
-    cmd_ingestar(str(intermedios[0]))
+    cmd_ingestar(slug, str(intermedios[0]))
 
 
-def cmd_stats():
-    SessionFactory = get_session_factory()
+def cmd_stats(slug: str):
+    SessionFactory = db_module.get_session_factory(slug)
     s = SessionFactory()
     np = s.query(Proveedor).count()
     nprod = s.query(Producto).count()
@@ -234,9 +246,9 @@ def _imprimir_veredicto(info: dict, prefijo: str = "  "):
     print(f"{prefijo}VEREDICTO: {info['veredicto']}  ({info['motivo']})")
 
 
-def cmd_validar(proveedor_id: str | None = None):
+def cmd_validar(slug: str, proveedor_id: str | None = None):
     """Reporta calidad de la ingesta para un proveedor (default: el ultimo)."""
-    SessionFactory = get_session_factory()
+    SessionFactory = db_module.get_session_factory(slug)
     s = SessionFactory()
     try:
         if proveedor_id:
@@ -256,53 +268,119 @@ def cmd_validar(proveedor_id: str | None = None):
         s.close()
 
 
-def cmd_seed_categorias():
-    """Recarga categorias y patrones desde config/categorias.yml a la BD."""
+def cmd_seed_categorias(slug: str):
+    """Recarga categorias y patrones desde config/categorias.yml a la BD del proyecto."""
     from scripts.seed_categorias import seed
     from app.clasificador import invalidar_cache
-    resumen = seed()
+    resumen = seed(session_factory=db_module.get_session_factory(slug))
     invalidar_cache()
     print("Seed de categorias completado.")
     for k, v in resumen.items():
         print(f"  {k}: {v}")
 
 
-def cmd_seed_aranceles(reset: bool = False):
+def cmd_seed_aranceles(slug: str, reset: bool = False):
     """Siembra fracciones arancelarias estandar desde config/aranceles.yml."""
     from scripts.seed_aranceles import seed
-    resumen = seed(reset=reset)
+    resumen = seed(reset=reset, session_factory=db_module.get_session_factory(slug))
     print(f"Seed de aranceles completado{' (RESET)' if reset else ''}.")
     for k, v in resumen.items():
         print(f"  {k}: {v}")
 
 
+def cmd_proponer_catalogo(slug: str):
+    """Propone catalogo (categorias+keywords+aranceles) con IA. Dry-run: solo imprime."""
+    from app import catalogo_ia
+    Session = db_module.get_session_factory(slug)
+    s = Session()
+    try:
+        rows = (
+            s.query(Producto.descripcion)
+            .filter(Producto.descripcion.isnot(None))
+            .filter((Producto.categoria.is_(None)) | (Producto.categoria != "_descartar"))
+            .distinct()
+            .all()
+        )
+        descripciones = [d for (d,) in rows if d]
+    finally:
+        s.close()
+    if not descripciones:
+        print("No hay productos para analizar. Ingesta productos primero.")
+        return
+    print(f"Analizando {len(descripciones)} descripciones con IA (puede tardar)...")
+    prop = catalogo_ia.proponer_catalogo(descripciones)
+    if not prop.get("ok"):
+        print("ERROR:", prop.get("error"))
+        return
+    print(f"Dominio: {prop.get('dominio')}")
+    if prop.get("aviso_aranceles"):
+        print("Aviso:", prop["aviso_aranceles"])
+    for c in prop["categorias"]:
+        frac = c.get("fraccion") or "—"
+        tasa = c.get("tasa_pct")
+        tasa_s = f"{tasa}%" if tasa is not None else "—"
+        print(f"  [{c['arancel_estado']:9}] {c['slug']:20} orden={c['orden']:<4} "
+              f"frac={frac:12} tasa={tasa_s:6} kw={len(c['keywords'])}")
+    print("\n(Propuesta NO persistida. Aplicala desde la UI /categorias.)")
+
+
+def _extraer_proyecto(argv: list[str]) -> tuple[str, list[str]]:
+    """Saca '--proyecto <slug>' de argv. Precedencia: flag > env PROYECTO > 'principal'."""
+    load_dotenv()
+    slug = os.environ.get("PROYECTO", "principal")
+    rest = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--proyecto":
+            if i + 1 >= len(argv):
+                print("--proyecto requiere un slug")
+                sys.exit(2)
+            slug = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--proyecto="):
+            slug = a.split("=", 1)[1]
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    if not db_module.slug_valido(slug):
+        print(f"slug de proyecto invalido: {slug!r}")
+        sys.exit(2)
+    return slug, rest
+
+
 def main():
-    if len(sys.argv) < 2:
+    slug, argv = _extraer_proyecto(sys.argv[1:])
+    if not argv:
         print(__doc__)
         return
-    cmd = sys.argv[1]
+    cmd = argv[0]
     if cmd == "init":
-        cmd_init()
+        cmd_init(slug)
     elif cmd == "ingestar":
-        args = [a for a in sys.argv[2:] if not a.startswith("--")]
-        flags = [a for a in sys.argv[2:] if a.startswith("--")]
+        args = [a for a in argv[1:] if not a.startswith("--")]
+        flags = [a for a in argv[1:] if a.startswith("--")]
         patron = args[0] if args else None
-        cmd_ingestar(patron, gate="--force" not in flags)
+        cmd_ingestar(slug, patron, gate="--force" not in flags)
     elif cmd == "stats":
-        cmd_stats()
+        cmd_stats(slug)
     elif cmd == "pdf":
-        if len(sys.argv) < 3:
+        if len(argv) < 2:
             print("Uso: python -m app.cli pdf <archivo.pdf>")
             return
-        cmd_pdf(sys.argv[2])
+        cmd_pdf(slug, argv[1])
     elif cmd == "validar":
-        prov_id = sys.argv[2] if len(sys.argv) >= 3 else None
-        cmd_validar(prov_id)
+        prov_id = argv[1] if len(argv) >= 2 else None
+        cmd_validar(slug, prov_id)
     elif cmd == "seed-categorias":
-        cmd_seed_categorias()
+        cmd_seed_categorias(slug)
     elif cmd == "seed-aranceles":
-        flags = [a for a in sys.argv[2:] if a.startswith("--")]
-        cmd_seed_aranceles(reset="--reset" in flags)
+        flags = [a for a in argv[1:] if a.startswith("--")]
+        cmd_seed_aranceles(slug, reset="--reset" in flags)
+    elif cmd == "proponer-catalogo":
+        cmd_proponer_catalogo(slug)
     else:
         print(f"Comando desconocido: {cmd}")
         print(__doc__)

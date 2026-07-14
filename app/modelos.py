@@ -5,7 +5,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, relationship
 
+# Metadata de negocio: vive en cada BD de proyecto (data/proyectos/<slug>/productos.db).
 Base = declarative_base()
+
+# Metadata de sistema: vive en la BD compartida (data/sistema.db). Auth global y
+# registro de proyectos, independiente del proyecto activo.
+SistemaBase = declarative_base()
 
 
 class Proveedor(Base):
@@ -44,6 +49,11 @@ class Producto(Base):
     color = Column(String(200))
     moq = Column(String(50))
     packing = Column(String(200))
+    # PDF de origen de ESTE producto (nombre de archivo en PDF_INGEST_DIR). Se
+    # llena en la ingesta. Permite que un mismo proveedor tenga varios PDFs y
+    # cada producto enlace a su "Cotizacion original" correcta. Fallback:
+    # Proveedor.archivo_pdf (legacy / productos previos a esta columna).
+    archivo_pdf = Column(String(500))
     carton_dims = Column(String(200))
     cbm = Column(Float)
     pzas_20ft = Column(Integer)
@@ -53,6 +63,11 @@ class Producto(Base):
 
     categoria = Column(String(50))
     subcategoria = Column(String(100))
+
+    # Tags/keywords por producto (csv en minusculas) para busqueda. Se generan
+    # junto a la descripcion por vision (app/catalogo_ia.describir_fotos) cuando
+    # el PDF no trae texto. Independiente de las CategoriaKeyword (catalogo).
+    tags = Column(Text)
 
     # 'Primary' | 'Special Buy' (export Pet PD)
     item_type = Column(String(20), default="Primary")
@@ -160,7 +175,8 @@ class CompetidorListing(Base):
     __tablename__ = "competidor_listings"
     id = Column(Integer, primary_key=True)
     producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
-    marketplace = Column(String(20), nullable=False)  # 'amazon_mx' | 'mercadolibre_mx' | 'petco_mx'
+    # 'amazon_mx' | 'mercadolibre_mx' | 'petco_mx' | dominio de un sitio extra
+    marketplace = Column(String(60), nullable=False)
     titulo = Column(Text, nullable=False)
     precio_mxn = Column(Float)
     rating = Column(Float)
@@ -180,16 +196,40 @@ class Categoria(Base):
 
     El YAML es la fuente de verdad; esta tabla es una proyeccion sembrada
     via 'python -m app.cli seed-categorias'. El clasificador lee de aqui
-    con cache (lru_cache); si la tabla esta vacia hace fallback al YAML.
+    con cache (lru_cache); si la tabla esta vacia el proyecto arranca sin
+    categorias (multiproyecto: la IA las propone desde las ingestas).
 
     Orden: numero menor = mayor prioridad. Importante para resolver
     overlaps entre categorias (ej. 'hummingbird feeder' debe caer en
     'pajaros' antes que en 'alimentadores').
+
+    Arancel a nivel categoria (feature de bootstrapping asistido por IA):
+    fraccion + tasa_pct se investigan por IA (web_search) o se fijan a mano.
+    `arancel_estado` gobierna si aplican a la cotizacion:
+      - 'confirmado' -> resolver_arancel (lookup.py) usa fraccion/tasa de aqui
+        ANTES de la heuristica de metal y del puente CATEGORIA_A_TARIFA.
+      - 'pendiente'  -> categoria activa (clasifica) pero sin fraccion definida;
+        la cotizacion cae al default y la UI la marca "pendiente".
+      - NULL         -> legacy/pet: ignorada por el lookup (cascada intacta).
     """
     __tablename__ = "categorias"
     id = Column(Integer, primary_key=True)
     slug = Column(String(50), nullable=False, unique=True)
     orden = Column(Integer, nullable=False, default=100)
+
+    # Arancel por categoria (nullable: los proyectos pet existentes no lo usan).
+    fraccion = Column(String(20))                 # TIGIE NNNN.NN.NN
+    tasa_pct = Column(Float)                       # IGI %
+    arancel_estado = Column(String(20))           # 'confirmado' | 'pendiente' | None
+    arancel_nota = Column(Text)
+    arancel_fuente_url = Column(Text)             # trazabilidad de la investigacion IA
+    arancel_actualizado_en = Column(DateTime)
+
+    # Sitios donde buscar competencia para esta categoria (busqueda web_search).
+    # CSV de dominios (ej. 'amazon.com.mx,mercadolibre.com.mx,petco.com.mx').
+    # NULL/vacio => se usan los 3 dominios default (competencia.DOMINIOS).
+    competencia_sitios = Column(Text)
+    competencia_actualizado_en = Column(DateTime)
 
     keywords = relationship(
         "CategoriaKeyword",
@@ -248,13 +288,16 @@ class ArancelOverride(Base):
     actualizado_en = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class UsuarioAutorizado(Base):
+class UsuarioAutorizado(SistemaBase):
     """Lista blanca de correos con acceso a la app via Google OAuth2.
 
     El callback de OAuth (app/auth.py) rechaza el login si el correo no
     esta aqui o si activo=False. Sin roles: cualquier usuario activo puede
     gestionar la lista. Guardias en los endpoints impiden que alguien se
     desactive/borre a si mismo o al ultimo usuario activo.
+
+    Vive en la BD de sistema (data/sistema.db): el login y la whitelist son
+    globales, compartidos por todos los proyectos.
     """
     __tablename__ = "usuarios_autorizados"
     id = Column(Integer, primary_key=True)
@@ -290,3 +333,20 @@ class Arancel(Base):
     nota = Column(Text)
     creado_en = Column(DateTime, default=datetime.utcnow)
     actualizado_en = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Proyecto(SistemaBase):
+    """Registro de un proyecto/cliente. Vive en la BD de sistema.
+
+    Cada proyecto tiene su propia BD de negocio en
+    data/proyectos/<slug>/productos.db (clonada de data/_template.db) y su
+    carpeta de fotos/exports. El `slug` se usa como nombre de carpeta/archivo,
+    por lo que debe pasar por _validar_slug (seguro contra path traversal).
+    """
+    __tablename__ = "proyectos"
+    id = Column(Integer, primary_key=True)
+    slug = Column(String(60), nullable=False, unique=True, index=True)
+    nombre = Column(String(200), nullable=False)
+    activo = Column(Boolean, default=True, nullable=False)
+    creado_en = Column(DateTime, default=datetime.utcnow)
+    ultimo_uso = Column(DateTime)

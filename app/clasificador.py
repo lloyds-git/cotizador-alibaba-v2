@@ -29,20 +29,30 @@ class Reglas(NamedTuple):
     patrones_descarte: list[re.Pattern]
 
 
-@lru_cache(maxsize=1)
-def _cargar_reglas() -> Reglas:
-    """Carga reglas: BD si esta sembrada, sino YAML.
+@lru_cache(maxsize=32)
+def _cargar_reglas(slug: str | None) -> Reglas:
+    """Carga reglas del proyecto `slug`: BD si esta sembrada, sino YAML.
 
-    Cacheado. Si actualizas keywords en runtime, llama invalidar_cache().
+    Cacheado por slug (cada proyecto tiene sus propias categorias/patrones). Si
+    slug es None no hay contexto de proyecto -> usa el YAML (tests). Si
+    actualizas keywords en runtime, llama invalidar_cache().
     """
-    reglas_bd = _intentar_bd()
-    if reglas_bd is not None:
-        return reglas_bd
+    if slug is not None:
+        reglas_bd = _intentar_bd(slug)
+        if reglas_bd is not None:
+            return reglas_bd
     return _cargar_yaml()
 
 
-def _intentar_bd() -> Reglas | None:
-    """Devuelve reglas desde la BD si la tabla existe y tiene filas."""
+def _intentar_bd(slug: str) -> Reglas | None:
+    """Devuelve reglas desde la BD del proyecto, o None si no se puede leer.
+
+    Semantica multiproyecto: si la consulta tiene exito, la BD es la fuente de
+    verdad AUNQUE la tabla `categorias` este vacia -> devolvemos reglas vacias
+    (el proyecto arranca sin categorias; la IA las propone desde las ingestas).
+    Solo se retorna None ante excepcion (tabla inexistente / BD bloqueada), que
+    en _cargar_reglas cae al YAML como fallback de resiliencia.
+    """
     try:
         from app.db import get_session_factory
         from app.modelos import Categoria, PatronDescarte
@@ -50,15 +60,13 @@ def _intentar_bd() -> Reglas | None:
         return None
 
     try:
-        Session = get_session_factory()
+        Session = get_session_factory(slug)
         with Session() as ses:
             cats = (
                 ses.query(Categoria)
                 .order_by(Categoria.orden.asc(), Categoria.id.asc())
                 .all()
             )
-            if not cats:
-                return None
             categorias = [
                 (c.slug, [kw.keyword.lower() for kw in c.keywords])
                 for c in cats
@@ -96,8 +104,10 @@ def invalidar_cache() -> None:
     _cargar_reglas.cache_clear()
 
 
-def clasificar_descripcion(descripcion: str | None) -> str | None:
+def clasificar_descripcion(descripcion: str | None, slug: str | None = None) -> str | None:
     """Devuelve categoria detectada, '_descartar' si parece ruido, o None.
+
+    `slug` selecciona el proyecto cuyas reglas usar (None -> YAML).
 
     1. Descripciones <15 chars o que matchean patrones_descarte -> '_descartar'.
     2. Match contra keywords por orden (menor 'orden' gana).
@@ -109,7 +119,7 @@ def clasificar_descripcion(descripcion: str | None) -> str | None:
     if not d_strip:
         return None
 
-    reglas = _cargar_reglas()
+    reglas = _cargar_reglas(slug)
 
     for pat in reglas.patrones_descarte:
         if pat.search(d_strip):
@@ -125,6 +135,8 @@ def clasificar_descripcion(descripcion: str | None) -> str | None:
     return None
 
 
-def clasificar_lote(items: list[tuple[int, str | None]]) -> list[tuple[int, str | None]]:
-    """Mapea [(id, descripcion), ...] -> [(id, categoria), ...]."""
-    return [(_id, clasificar_descripcion(desc)) for _id, desc in items]
+def clasificar_lote(
+    items: list[tuple[int, str | None]], slug: str | None = None
+) -> list[tuple[int, str | None]]:
+    """Mapea [(id, descripcion), ...] -> [(id, categoria), ...] para el proyecto `slug`."""
+    return [(_id, clasificar_descripcion(desc, slug)) for _id, desc in items]

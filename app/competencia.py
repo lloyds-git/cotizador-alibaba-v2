@@ -24,10 +24,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MODELO_DEFAULT = os.getenv("COMPETENCIA_MODELO", "claude-sonnet-4-6")
-# Version de la server-tool de web search. 20250305 es estable; se puede subir
-# a 20260209 via env si la API lo acepta.
-WEBSEARCH_TOOL = os.getenv("COMPETENCIA_WEBSEARCH_TOOL", "web_search_20250305")
+MODELO_DEFAULT = os.getenv("COMPETENCIA_MODELO", "claude-haiku-4-5")
+# web_search_20260209 (filtrado dinamico) solo en modelos recientes; Haiku 4.5 da
+# 400 -> usa la basica. Se autoselecciona segun el modelo; override con COMPETENCIA_WEBSEARCH_TOOL.
+_WS_DINAMICO = ("opus-4-6", "opus-4-7", "opus-4-8", "sonnet-5", "sonnet-4-6")
+WEBSEARCH_TOOL = os.getenv("COMPETENCIA_WEBSEARCH_TOOL") or (
+    "web_search_20260209" if any(m in MODELO_DEFAULT for m in _WS_DINAMICO)
+    else "web_search_20250305"
+)
 MAX_BUSQUEDAS = int(os.getenv("COMPETENCIA_MAX_BUSQUEDAS", "9"))
 
 # marketplace -> dominio para allowed_domains
@@ -43,6 +47,48 @@ NOMBRES = {
     "mercadolibre.com.mx": "Mercado Libre Mexico",
     "petco.com.mx": "Petco Mexico",
 }
+
+# dominio canonico -> clave de marketplace (inverso de DOMINIOS)
+DOMINIO_A_KEY = {d: k for k, d in DOMINIOS.items()}
+
+
+def _host_de_url(url: str) -> str:
+    """Host de una URL o dominio, en minusculas y sin 'www.'. '' si no aplica."""
+    s = (url or "").strip().lower()
+    if not s:
+        return ""
+    s = re.sub(r"^[a-z]+://", "", s)           # quitar esquema http(s)://
+    s = s.split("/")[0].split("?")[0].split("#")[0]  # cortar path/query/fragment
+    s = s.split("@")[-1].split(":")[0]         # quitar credenciales y puerto
+    if s.startswith("www."):
+        s = s[4:]
+    return s
+
+
+def _key_de_dominio(host: str) -> str:
+    """Clave de marketplace del host: canonica para los 3 sitios; el dominio si no."""
+    for dom, key in DOMINIO_A_KEY.items():
+        if host == dom or host.endswith("." + dom):
+            return key
+    return host
+
+
+def resolver_dominios(sitios_categoria: str | None = None,
+                      extra: str | None = None) -> list[str]:
+    """Lista final de dominios donde buscar (CSV de la categoria + extra, se suman).
+
+    Acepta dominios sueltos o URLs completas (extrae el host). Dedup preservando
+    orden. Si queda vacio, cae a los 3 dominios default (DOMINIOS).
+    """
+    dominios: list[str] = []
+    for fuente in (sitios_categoria, extra):
+        if not fuente:
+            continue
+        for token in re.split(r"[,\s;]+", fuente):
+            host = _host_de_url(token)
+            if host and host not in dominios:
+                dominios.append(host)
+    return dominios or list(DOMINIOS.values())
 
 
 def construir_query(producto) -> str:
@@ -91,21 +137,30 @@ def _texto_de_respuesta(response) -> str:
     return "\n".join(out)
 
 
-def _normalizar(item: dict, marketplaces: list[str]) -> dict | None:
-    """Valida/normaliza un candidato devuelto por Claude. None si invalido."""
-    mp = (item.get("marketplace") or "").strip().lower()
-    if mp in ("amazon", "amazon_mx", "amazon mx"):
-        mp = "amazon_mx"
-    elif mp in ("mercadolibre", "mercado_libre", "mercadolibre_mx", "meli", "ml"):
-        mp = "mercadolibre_mx"
-    elif mp in ("petco", "petco_mx", "petco mx", "petco.com.mx"):
-        mp = "petco_mx"
-    if mp not in DOMINIOS:
-        return None
+def _conto_busquedas(response) -> int:
+    """Cuantas veces el modelo ejecuto web_search (0 = no busco / rechazo)."""
+    return sum(
+        1 for b in response.content
+        if getattr(b, "type", None) == "server_tool_use"
+    )
+
+
+def _normalizar(item: dict, dominios: list[str]) -> dict | None:
+    """Valida/normaliza un candidato devuelto por Claude. None si invalido.
+
+    El marketplace se deriva del host de la URL (fuente de verdad): clave
+    canonica para los 3 sitios ('amazon_mx', ...) y el dominio para sitios extra.
+    Descarta candidatos cuyo host no este entre los `dominios` buscados.
+    """
     titulo = (item.get("titulo") or item.get("title") or "").strip()
     url = (item.get("url") or "").strip()
     if not titulo or not url:
         return None
+
+    host = _host_de_url(url)
+    if not any(host == d or host.endswith("." + d) for d in dominios):
+        return None
+    mp = _key_de_dominio(host)
 
     def _num(v):
         if v is None or v == "":
@@ -128,8 +183,11 @@ def _normalizar(item: dict, marketplaces: list[str]) -> dict | None:
     }
 
 
-def buscar_candidatos(query: str, marketplaces: list[str] | None = None) -> dict:
+def buscar_candidatos(query: str, dominios: list[str] | None = None) -> dict:
     """Busca candidatos de competencia. NO persiste.
+
+    `dominios` es la lista ya resuelta de dominios donde buscar (ver
+    resolver_dominios). Si es None/vacia usa los 3 default (DOMINIOS).
 
     Devuelve: {ok, candidatos, query, modelo, error}
     """
@@ -143,19 +201,24 @@ def buscar_candidatos(query: str, marketplaces: list[str] | None = None) -> dict
                 "modelo": MODELO_DEFAULT,
                 "error": "Falta ANTHROPIC_API_KEY en el entorno."}
 
-    marketplaces = marketplaces or list(DOMINIOS.keys())
-    dominios = [DOMINIOS[m] for m in marketplaces if m in DOMINIOS]
-    if not dominios:
-        dominios = list(DOMINIOS.values())
+    dominios = [d for d in (dominios or []) if d] or list(DOMINIOS.values())
 
     nombres = ", ".join(NOMBRES.get(d, d) for d in dominios)
 
     prompt = (
+        "Tienes habilitada la herramienta web_search y DEBES usarla. "
+        "Ejecuta busquedas reales; NO respondas que no puedes buscar, que no "
+        "tienes acceso a los catalogos, ni que no hay datos en tiempo real: "
+        "esas respuestas son incorrectas. Simplemente usa web_search.\n\n"
         f"Busca en {nombres} productos que correspondan a este articulo:\n\n"
         f'"{query}"\n\n'
-        "Para CADA marketplace encuentra hasta 4 listings que sean el mismo "
-        "producto o el equivalente mas parecido. Usa los resultados reales de "
-        "busqueda (no inventes URLs ni precios).\n\n"
+        "Para CADA sitio devuelve hasta 4 listings del MISMO TIPO de producto. "
+        "IMPORTANTE: casi nunca existe el producto identico; el objetivo es "
+        "comparar precios de mercado, asi que INCLUYE los listings mas parecidos "
+        "que encuentres aunque difieran en tamano, marca, color o variante "
+        "(p. ej. otros ramos artificiales de rosas). NO los descartes por no ser "
+        "identicos; en vez de eso baja su confianza_match. Usa los resultados "
+        "reales de busqueda (no inventes URLs ni precios).\n\n"
         "EL PRECIO ES OBLIGATORIO. En los resultados de busqueda de estos "
         "sitios el precio casi SIEMPRE aparece como "
         "texto junto al producto (ej. '$359.00', '$1,299'). Lee y extrae el "
@@ -170,7 +233,7 @@ def buscar_candidatos(query: str, marketplaces: list[str] | None = None) -> dict
         "```json\n"
         "[\n"
         "  {\n"
-        '    "marketplace": "amazon_mx" | "mercadolibre_mx" | "petco_mx",\n'
+        '    "marketplace": "amazon_mx | mercadolibre_mx | petco_mx | el dominio del sitio",\n'
         '    "titulo": "titulo del listing",\n'
         '    "precio_mxn": 359.0,\n'
         '    "rating": 4.5,\n'
@@ -184,8 +247,10 @@ def buscar_candidatos(query: str, marketplaces: list[str] | None = None) -> dict
         "```\n"
         "precio_mxn es el precio al publico en pesos mexicanos (numero, sin "
         "simbolos ni comas; usa el precio actual/con descuento si hay oferta). "
-        "confianza_match es 0.0-1.0 segun que tan seguro es que sea el mismo "
-        "producto. Si no encuentras nada, responde []."
+        "confianza_match es 0.0-1.0 segun que tan parecido es al articulo "
+        "buscado (1.0 = practicamente el mismo; 0.4-0.7 = mismo tipo pero "
+        "distinta variante/tamano/marca). Devuelve [] SOLO si de plano no hay "
+        "ningun producto del mismo tipo en ese sitio."
     )
 
     client = anthropic.Anthropic()
@@ -193,6 +258,9 @@ def buscar_candidatos(query: str, marketplaces: list[str] | None = None) -> dict
         response = client.messages.create(
             model=MODELO_DEFAULT,
             max_tokens=4096,
+            # thinking off: predecible en costo/latencia y compatible con Sonnet 5
+            # y Haiku 4.5 (ambos aceptan disabled).
+            thinking={"type": "disabled"},
             tools=[{
                 "type": WEBSEARCH_TOOL,
                 "name": "web_search",
@@ -212,12 +280,24 @@ def buscar_candidatos(query: str, marketplaces: list[str] | None = None) -> dict
 
     texto = _texto_de_respuesta(response)
     crudos = _extraer_json(texto)
-    candidatos = [c for c in (_normalizar(it, marketplaces) for it in crudos) if c]
+    candidatos = [c for c in (_normalizar(it, dominios) for it in crudos) if c]
+    busquedas = _conto_busquedas(response)
+
+    if candidatos:
+        error = None
+    elif busquedas == 0:
+        # El modelo no invoco web_search (tipico de Haiku: contesta "no puedo
+        # buscar"). No es que no haya competencia; es el modelo. Da una pista util.
+        error = (f"El modelo '{MODELO_DEFAULT}' no ejecuto ninguna busqueda web. "
+                 "Usa un modelo mas capaz: define COMPETENCIA_MODELO=claude-sonnet-5 "
+                 "en el .env y reinicia.")
+    else:
+        error = "Sin coincidencias claras."
 
     return {
         "ok": True,
         "candidatos": candidatos,
         "query": query,
         "modelo": MODELO_DEFAULT,
-        "error": None if candidatos else "Sin coincidencias claras.",
+        "error": error,
     }

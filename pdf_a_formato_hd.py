@@ -663,6 +663,27 @@ def main() -> None:
         print("1. Extrayendo con Adobe...")
         extraer_pdf_con_adobe(pdf_path, carpeta_extract)
 
+    # Paso 1.5: fallback de fotos embebidas. Si Adobe dejo figures/ casi vacio
+    # (PDF tipo-tabla con las fotos DENTRO de las celdas: Adobe rasteriza la
+    # tabla por pagina en tables/ y no emite las fotos como figuras), sacamos
+    # las imagenes embebidas del PDF con PyMuPDF y las inyectamos en
+    # structuredData.json como figuras. Asi el matcheo por posicion que sigue
+    # (heuristico y Claude) les asigna su producto por cercania en Y, igual que
+    # con los PDFs cuyas fotos si vienen como figuras sueltas. Solo se dispara en
+    # ese modo de falla; PDFs con figuras propias no se tocan.
+    if "--no-figuras-embebidas" not in sys.argv:
+        try:
+            from app.fotos_embebidas import (
+                figuras_escasas,
+                recuperar_figuras_embebidas,
+            )
+            if figuras_escasas(carpeta_extract):
+                print()
+                print("1.5. figures/ escaso: recuperando fotos embebidas del PDF...")
+                recuperar_figuras_embebidas(pdf_path, carpeta_extract)
+        except Exception as e:
+            print(f"   Aviso: fallback de fotos embebidas fallo ({e}); continuo.")
+
     # Paso 2: parsear JSON con parser heuristico
     print()
     print("2. Parseando structuredData.json (parser heuristico)...")

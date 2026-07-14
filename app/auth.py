@@ -117,7 +117,8 @@ async def auth_callback(request: Request):
     if not email:
         return RedirectResponse(url="/login?error=sin_email", status_code=302)
 
-    SessionFactory = db_module.get_session_factory()
+    # La whitelist vive en la BD de sistema (compartida por todos los proyectos).
+    SessionFactory = db_module.get_sistema_session_factory()
     with SessionFactory() as ses:
         user = (
             ses.query(UsuarioAutorizado)

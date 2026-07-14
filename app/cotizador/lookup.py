@@ -17,7 +17,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.modelos import ArancelOverride, Arancel
+from app.modelos import ArancelOverride, Arancel, Categoria
 from app.cotizador.tariffs import lookup_tariff as lookup_tariff_estatico
 
 
@@ -28,7 +28,9 @@ MATERIALES_METAL = ("steel", "acero", "metal", "iron", "hierro", "stainless", "i
 class TariffResult:
     fraccion: str
     tasa_pct: Decimal
-    fuente: str  # "override-db", "tariffs-estatico", "default-metal", "default-25"
+    # "override-db", "categoria-confirmada", "aranceles-db", "tariffs-estatico",
+    # "default-metal", "default-25"
+    fuente: str
     nota: str = ""
 
 
@@ -85,6 +87,7 @@ def resolver_arancel(
 ) -> TariffResult:
     """Resuelve fraccion + tasa siguiendo la jerarquia:
       1. Override en DB (mas especifico gana — cat+mat > cat > mat > global)
+      1b. Arancel confirmado a nivel Categoria (por slug del producto)
       2. Default por material: 35% si es metalico
       3. Tariffs.py estatico (mapeo de categorias mascotas)
       4. Default 25%
@@ -93,6 +96,10 @@ def resolver_arancel(
     'todo al 25% excepto acero/metal que va al 35%'. Si quieres una tasa
     distinta para una combinacion cat+material, configura un override en
     /aranceles.
+
+    `categoria` es el slug del Producto (ej. 'rejas'). El paso 1b resuelve la
+    fraccion investigada/fijada por la feature de bootstrapping de catalogo IA,
+    pero SOLO cuando esta 'confirmado' (propuesta/pendiente no afecta cotizacion).
     """
     # 1. Override en DB
     if session is not None:
@@ -103,6 +110,25 @@ def resolver_arancel(
                 tasa_pct=Decimal(str(ov.tasa_pct)),
                 fuente="override-db",
                 nota=ov.nota or "",
+            )
+
+    # 1b. Arancel confirmado a nivel Categoria (por slug del producto). Un
+    # override explicito (cat+material) sigue ganando; esto vence a la heuristica
+    # de metal y al puente pet CATEGORIA_A_TARIFA.
+    if session is not None and categoria:
+        cat = session.query(Categoria).filter_by(slug=categoria).first()
+        if (
+            cat is not None
+            and cat.arancel_estado == "confirmado"
+            and cat.fraccion
+            and cat.fraccion != "—"
+            and cat.tasa_pct is not None
+        ):
+            return TariffResult(
+                fraccion=cat.fraccion,
+                tasa_pct=Decimal(str(cat.tasa_pct)),
+                fuente="categoria-confirmada",
+                nota=cat.arancel_nota or "",
             )
 
     # 2. Default por material metalico (gana sobre estandar)

@@ -32,8 +32,11 @@
 </head>
 <body class="bg-gray-50 text-gray-900">
 {% set u = request.session.get('user') if request else None %}
-<header class="bg-white shadow px-6 py-4 flex justify-between items-center">
-  <h1 class="text-xl font-bold">Productos Mascotas</h1>
+<header class="bg-white shadow px-6 py-4 flex justify-between items-center"
+        x-data="proyectoSelector()" x-init="cargar()">
+  <!-- El titulo muestra el nombre del proyecto activo (fallback mientras carga
+       o si no hay proyecto). El estado viene del componente proyectoSelector. -->
+  <h1 class="text-xl font-bold" x-text="nombreActual() || 'Productos Mascotas'">Productos Mascotas</h1>
   <div class="flex items-center gap-6">
     <nav class="text-sm">
       <a href="/" class="hover:underline">Productos</a>
@@ -45,6 +48,21 @@
       <a href="/ayuda" class="hover:underline ml-4">Ayuda</a>
     </nav>
     {% if u %}
+      <!-- Selector de proyecto activo. Comparte el componente proyectoSelector
+           con el <header> (definido arriba en x-data). -->
+      <div class="flex items-center gap-1 text-sm border-l pl-4 border-gray-200">
+        <span class="text-gray-500 text-xs">Proyecto:</span>
+        <template x-if="items.length">
+          <select x-model="actual" @change="cambiar($event.target.value)"
+                  class="border rounded px-2 py-1 text-sm max-w-[160px]">
+            <template x-for="p in items" :key="p.slug">
+              <option :value="p.slug" x-text="p.nombre"></option>
+            </template>
+          </select>
+        </template>
+        <a href="/proyectos" class="text-blue-600 hover:underline text-xs ml-1" title="Gestionar proyectos">⚙</a>
+      </div>
+
       <!-- Boton de ayuda rapida (?) + modal. x-data independiente: no choca con el de cada pagina. -->
       <div x-data="ayudaModal()">
         <button type="button" @click="abrir()" title="Ayuda"
@@ -104,6 +122,41 @@
     if (!window.marked) return '';
     const html = marked.parse(md || '');
     return window.DOMPurify ? DOMPurify.sanitize(html) : html;
+  }
+
+  // Selector de proyecto activo del nav. Carga /api/proyectos y cambia el
+  // proyecto en sesion; al cambiar recarga para que toda la UI use la nueva BD.
+  function proyectoSelector() {
+    return {
+      items: [],
+      actual: null,
+      // Nombre del proyecto activo (para el titulo del header). null si no hay.
+      nombreActual() {
+        const it = this.items.find(p => p.slug === this.actual);
+        return it ? it.nombre : null;
+      },
+      async cargar() {
+        try {
+          const r = await fetch('/api/proyectos');
+          if (!r.ok) return;
+          const d = await r.json();
+          this.items = d.items || [];
+          this.actual = d.activo;
+        } catch (e) { console.error('Error cargando proyectos', e); }
+      },
+      async cambiar(slug) {
+        if (!slug || slug === this.actual) return;
+        const fd = new FormData();
+        fd.append('slug', slug);
+        try {
+          const r = await fetch('/proyectos/seleccionar', {
+            method: 'POST', body: fd, headers: { 'HX-Request': 'true' },
+          });
+          if (r.ok) { window.location.reload(); }
+          else { alert('No se pudo cambiar de proyecto'); this.actual = null; this.cargar(); }
+        } catch (e) { console.error('Error cambiando proyecto', e); }
+      }
+    };
   }
 
   // Estado del modal de ayuda rapida (boton "?"). Carga el contenido la primera vez que se abre.

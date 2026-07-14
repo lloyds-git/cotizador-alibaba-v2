@@ -133,6 +133,14 @@
         🗑 Borrar proveedor
       </button>
 
+      <button type="button" @click="redescribirProveedorIA()"
+              :disabled="redescribiendoBulk"
+              class="bg-purple-100 hover:bg-purple-200 text-purple-800 px-2 py-0.5 rounded disabled:opacity-50 inline-flex items-center gap-1"
+              :title="proveedorFiltro ? 'Redescribe con IA (visión) todos los productos con foto del proveedor seleccionado y los categoriza si no tienen categoria' : 'Redescribe con IA todos los productos con foto (o filtra por proveedor primero)'">
+        <span x-show="!redescribiendoBulk">✨ Redescribir con IA</span>
+        <span x-show="redescribiendoBulk">⏳ <span x-text="redescribirBulkMsg || 'Procesando…'"></span></span>
+      </button>
+
       <button type="button" @click="abrirUploadPdf()"
               class="bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Subir un PDF de cotizacion para extraer e ingestar productos automaticamente">
@@ -149,6 +157,13 @@
               class="bg-teal-600 hover:bg-teal-700 text-white px-2 py-0.5 rounded inline-flex items-center gap-1"
               title="Calcula pzas_40hq = floor(67/CBM) x pzas_caja para productos que lo tienen vacio">
         📦 Validar 40HQ
+      </button>
+
+      <button type="button" @click="limpiarIndigest()" :disabled="limpiandoIndigest"
+              class="bg-amber-100 hover:bg-amber-200 text-amber-800 px-2 py-0.5 rounded disabled:opacity-50 inline-flex items-center gap-1"
+              title="Purga de la carpeta de ingesta las extracciones de Adobe, los intermedios y los PDFs huerfanos de intentos fallidos. Conserva los PDFs referenciados por productos (Cotizacion original).">
+        <span x-show="!limpiandoIndigest">🧹 Limpiar temporales</span>
+        <span x-show="limpiandoIndigest">⏳ Limpiando…</span>
       </button>
 
       <button type="button" @click="exportarCategoria()" :disabled="!categoriaFiltro || categoriaFiltro === ''"
@@ -354,12 +369,16 @@
               </span>
               <span class="text-[10px]"
                     :class="{
-                      'text-green-600': detalle.tasa_arancelaria_fuente === 'override-db',
+                      'text-green-600': detalle.tasa_arancelaria_fuente === 'override-db' || detalle.tasa_arancelaria_fuente === 'categoria-confirmada',
                       'text-blue-600': detalle.tasa_arancelaria_fuente === 'tariffs-estatico' || detalle.tasa_arancelaria_fuente === 'aranceles-db',
                       'text-orange-600': detalle.tasa_arancelaria_fuente === 'default-metal',
                       'text-gray-500': detalle.tasa_arancelaria_fuente === 'default-25'
                     }"
                     x-text="'(' + (detalle.tasa_arancelaria_fuente || '?') + ')'"></span>
+              <a href="/categorias"
+                 x-show="detalle.categoria_arancel_estado === 'pendiente'"
+                 class="text-[10px] bg-amber-100 text-amber-700 px-1 rounded hover:underline"
+                 title="La categoria no tiene fraccion confirmada; se usa el default. Definela en Categorias.">arancel pendiente</a>
               <a href="/aranceles" class="text-blue-500 hover:underline text-[10px]"
                  title="Editar fracciones estandar y overrides">[editar]</a>
             </div>
@@ -426,8 +445,18 @@
 
         <!-- Descripcion -->
         <div class="mb-3">
-          <div class="text-xs text-gray-500 uppercase">Descripcion</div>
-          <div class="text-sm" x-text="detalle.descripcion"></div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <div class="text-xs text-gray-500 uppercase">Descripcion</div>
+            <button type="button" @click="redescribirProducto()"
+                    :disabled="redescribiendo"
+                    class="text-[11px] bg-purple-100 hover:bg-purple-200 text-purple-800 px-2 py-0.5 rounded disabled:opacity-50"
+                    title="Regenera la descripcion y los tags con IA a partir de la foto, y categoriza si aun no tiene categoria">
+              <span x-show="!redescribiendo">✨ Redescribir con IA</span>
+              <span x-show="redescribiendo">⏳ Describiendo…</span>
+            </button>
+            <span x-show="redescribirError" class="text-[10px] text-red-600" x-text="redescribirError"></span>
+          </div>
+          <div class="text-sm mt-0.5" x-text="detalle.descripcion"></div>
         </div>
 
         <!-- Datos del producto en 2 columnas (editables in-place; PATCH al perder foco) -->
@@ -610,12 +639,18 @@
 
           <div x-show="competencia.mostrar" class="mt-2">
             <!-- query editable -->
-            <div class="flex gap-1 items-center text-xs mb-2">
+            <div class="flex gap-1 items-center text-xs mb-1">
               <input type="text" x-model="competencia.query"
                      placeholder="texto de búsqueda (descripción + medidas + material)"
                      class="border px-2 py-1 rounded flex-1 text-xs">
               <button type="button" @click="buscarCompetencia()" :disabled="competencia.buscando"
                       class="border px-2 py-1 rounded text-xs disabled:opacity-50">Re-buscar</button>
+            </div>
+            <!-- sitio(s) extra: se suman a los sitios de la categoría -->
+            <div class="flex gap-1 items-center text-xs mb-2">
+              <input type="text" x-model="competencia.sitios_extra"
+                     placeholder="sitio(s) extra (dominio o URL) — se suman a los de la categoría"
+                     class="border px-2 py-1 rounded flex-1 text-xs">
             </div>
 
             <template x-if="precioReferencia()">
@@ -686,16 +721,14 @@
                 <template x-if="competencia.resumen && competencia.resumen.global && competencia.resumen.global.prom">
                   <div class="text-[11px] bg-white border border-amber-300 rounded p-2">
                     <div class="font-semibold text-amber-800 mb-1">Resumen de mercado (c/IVA)</div>
-                    <template x-for="mk in [['amazon_mx','Amazon'],['mercadolibre_mx','ML'],['petco_mx','Petco'],['global','Global']]" :key="mk[0]">
-                      <template x-if="competencia.resumen[mk[0]] && competencia.resumen[mk[0]].prom">
-                        <div class="font-mono">
-                          <span x-text="mk[1]"></span>:
-                          min $<span x-text="competencia.resumen[mk[0]].min.toFixed(0)"></span>
-                          · prom $<span x-text="competencia.resumen[mk[0]].prom.toFixed(0)"></span>
-                          · max $<span x-text="competencia.resumen[mk[0]].max.toFixed(0)"></span>
-                          <span class="text-gray-400" x-text="'(n=' + competencia.resumen[mk[0]].n + ')'"></span>
-                        </div>
-                      </template>
+                    <template x-for="f in filasResumen()" :key="f.k">
+                      <div class="font-mono">
+                        <span x-text="f.label"></span>:
+                        min $<span x-text="f.s.min.toFixed(0)"></span>
+                        · prom $<span x-text="f.s.prom.toFixed(0)"></span>
+                        · max $<span x-text="f.s.max.toFixed(0)"></span>
+                        <span class="text-gray-400" x-text="'(n=' + f.s.n + ')'"></span>
+                      </div>
                     </template>
                     <template x-if="precioReferencia() && posicionVsMercado()">
                       <div class="mt-1 font-semibold"
@@ -712,7 +745,7 @@
             </template>
 
             <template x-if="!competencia.guardados.length && !competencia.candidatos.length && !competencia.buscando">
-              <div class="text-xs text-gray-500">Sin competencia guardada. Click "🔍 Buscar" para consultar Amazon MX, ML MX y Petco MX (precio c/IVA, estimado al momento).</div>
+              <div class="text-xs text-gray-500">Sin competencia guardada. Click "🔍 Buscar" para consultar los sitios de la categoría (por defecto Amazon MX, ML MX y Petco MX; configurables en Categorías) más el sitio extra que escribas (precio c/IVA, estimado al momento).</div>
             </template>
           </div>
         </div>
@@ -964,6 +997,21 @@
           Archivo: <span class="font-mono" x-text="uploadPdfFile && uploadPdfFile.name"></span>
           <span x-text="uploadPdfFile ? '(' + (uploadPdfFile.size / 1024 / 1024).toFixed(1) + ' MB)' : ''"></span>
         </div>
+
+        <!-- Proveedor destino: auto-detectar del PDF o agregar a uno existente -->
+        <label class="block text-sm mb-3">
+          <span class="text-gray-600">Proveedor destino:</span>
+          <select x-model="uploadPdfProveedorId" class="border rounded px-2 py-1 w-full mt-1 text-sm">
+            <option value="">(Auto-detectar del PDF)</option>
+            <template x-for="pv in proveedores" :key="pv.id">
+              <option :value="pv.id" x-text="pv.nombre + ' (' + pv.total + ')'"></option>
+            </template>
+          </select>
+          <span class="text-xs text-gray-400">
+            Elige uno si esta propuesta viene partida en varios PDFs y quieres
+            agregarla al mismo proveedor.
+          </span>
+        </label>
 
         <!-- Checkbox forzar: solo aparece despues de un rechazo por gate -->
         <label x-show="uploadPdfResultado && uploadPdfResultado.tipo === 'gate'"
@@ -1307,12 +1355,20 @@ function productosApp() {
       guardados: [],
       candidatos: [],
       query: '',
+      sitios_extra: '',     // sitio(s) manual(es) que se suman a los de la categoria
       buscando: false,
       seleccion: {},        // indice de candidato -> bool
       resumen: null,
       error: '',
       mostrar: false,
     },
+    // Redescripcion con IA (visión): por producto (panel) y masiva (por proveedor)
+    redescribiendo: false,
+    redescribirError: '',
+    redescribiendoBulk: false,
+    redescribirBulkMsg: '',
+    // Limpieza de la carpeta de ingesta (huerfanos + temporales)
+    limpiandoIndigest: false,
     // Modo edicion global (off por defecto: protege contra cambios accidentales)
     editable: false,
     // Estado de guardado por (producto_id + ':' + campo) -> 'saving' | 'ok' | 'error'
@@ -1326,6 +1382,7 @@ function productosApp() {
     subiendoPdf: false,
     uploadPdfFile: null,
     uploadPdfForzar: false,
+    uploadPdfProveedorId: '',
     uploadPdfResultado: null,
     uploadPdfElapsed: 0,
     // Validar CBM
@@ -1590,6 +1647,124 @@ function productosApp() {
       await this.cargarSnapshots();
     },
 
+    // Redescribe UN producto con IA (visión) desde su foto y lo categoriza si
+    // aun no tiene categoria. Actualiza panel + fila en la grilla.
+    async redescribirProducto() {
+      if (!this.detalle) return;
+      this.redescribiendo = true;
+      this.redescribirError = '';
+      try {
+        const r = await fetch(`/api/productos/${this.detalle.producto_id}/redescribir`, { method: 'POST' });
+        let j = {};
+        try { j = await r.json(); } catch (_) {}
+        if (!r.ok) { this.redescribirError = j.detail || ('Error ' + r.status); return; }
+        this.detalle.descripcion = j.descripcion;
+        const fila = this.productos.find(x => x.id === this.detalle.producto_id);
+        if (fila) fila.descripcion = j.descripcion;
+        if (j.categoria) {
+          this.detalle.categoria = j.categoria;
+          if (fila) fila.categoria = j.categoria;
+          await this.cargarCategorias();
+          await this.cargarSnapshots();
+        }
+        await this.refrescarDetalle();
+      } catch (e) {
+        this.redescribirError = 'Error de red: ' + e;
+      } finally {
+        this.redescribiendo = false;
+      }
+    },
+
+    // Redescribe en lote (async, con polling) todos los productos con foto del
+    // proveedor filtrado (o de todos). forzar=true: tambien los que ya tienen
+    // descripcion. Espeja el flujo de "Describir fotos IA" de categorias.html.
+    async redescribirProveedorIA() {
+      const pv = this.proveedores.find(x => String(x.id) === String(this.proveedorFiltro));
+      const alcance = pv ? `del proveedor "${pv.nombre}"` : 'de TODOS los proveedores';
+      if (!confirm(`¿Redescribir con IA (visión) los productos con foto ${alcance}? Sobrescribe la descripcion y los tags actuales usando la foto de cada producto, y categoriza los que aun no tengan categoria.`)) return;
+      this.redescribiendoBulk = true;
+      this.redescribirBulkMsg = 'Iniciando…';
+      try {
+        const r0 = await fetch('/api/catalogo/describir-fotos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ forzar: true, proveedor_id: pv ? pv.id : null }),
+        });
+        let inicio = null;
+        try { inicio = await r0.json(); } catch (_) {}
+        if (r0.status !== 202 || !inicio || !inicio.job_id) {
+          alert((inicio && inicio.detail) || ('No se pudo iniciar (' + r0.status + ').'));
+          return;
+        }
+        const jobId = inicio.job_id;
+        const INTERVALO = 3000, MAX_ESPERA = 30 * 60 * 1000, t0 = Date.now();
+        while (true) {
+          await new Promise(res => setTimeout(res, INTERVALO));
+          let rs, est = null;
+          try {
+            rs = await fetch('/api/catalogo/describir-fotos/status/' + jobId);
+            try { est = await rs.json(); } catch (_) {}
+          } catch (e) {
+            if (Date.now() - t0 > MAX_ESPERA) { alert('Se perdio la conexion.'); return; }
+            continue;
+          }
+          if (rs.status === 404) { alert((est && est.detail) || 'El proceso se perdio (servidor reiniciado). Reintenta.'); return; }
+          if (est && typeof est.elapsed === 'number') this.redescribirBulkMsg = Math.round(est.elapsed) + 's…';
+          if (est && est.estado === 'listo') {
+            const b = est.resultado || {};
+            if (est.http_status === 200 && b.ok) {
+              alert(`Redescritos: ${b.descritos}`
+                + (b.clasificados ? `, ${b.clasificados} categorizados` : '')
+                + (b.sin_foto ? `, ${b.sin_foto} sin foto` : '')
+                + (b.aviso ? `. ${b.aviso}` : '') + '.');
+              await this.cargarCategorias();
+              await this.cargar();
+              if (this.detalle) await this.cargarDetalle(this.detalle.producto_id);
+            } else {
+              alert('Error: ' + (b.error || est.http_status));
+            }
+            return;
+          }
+          if (Date.now() - t0 > MAX_ESPERA) { alert('El proceso supero el tiempo maximo.'); return; }
+        }
+      } catch (e) {
+        alert('Error de red: ' + (e.message || e));
+      } finally {
+        this.redescribiendoBulk = false;
+        this.redescribirBulkMsg = '';
+      }
+    },
+
+    // Purga la carpeta de ingesta: extracciones de Adobe, intermedios y PDFs
+    // huerfanos de intentos fallidos. Muestra un preview y pide confirmacion.
+    async limpiarIndigest() {
+      this.limpiandoIndigest = true;
+      try {
+        const r = await fetch('/api/mantenimiento/indigest');
+        let info = {};
+        try { info = await r.json(); } catch (_) {}
+        if (!r.ok) { alert('No pude analizar la carpeta (' + r.status + ').'); return; }
+        if (!info.n_items) { alert('No hay temporales que limpiar: la carpeta ya está en orden. 👍'); return; }
+        const msg = `Se van a borrar ${info.n_items} elementos (~${info.total_mb} MB):\n`
+          + `· ${info.n_extracts} extracciones de Adobe\n`
+          + `· ${info.n_intermedios} archivos intermedios\n`
+          + `· ${info.n_huerfanos} PDF huérfanos de intentos fallidos\n\n`
+          + `Se conservan los ${info.vivos.length} PDF referenciados por productos (Cotización original).\n\n`
+          + `¿Continuar? (no lo hagas mientras un PDF se está procesando)`;
+        if (!confirm(msg)) return;
+        const r2 = await fetch('/api/mantenimiento/indigest/limpiar', { method: 'POST' });
+        let res = {};
+        try { res = await r2.json(); } catch (_) {}
+        if (!r2.ok) { alert('Error al limpiar (' + r2.status + ').'); return; }
+        alert(`Listo: ${res.borrados} elementos borrados, ~${res.liberado_mb} MB liberados`
+          + (res.errores ? `, ${res.errores} con error` : '') + '.');
+      } catch (e) {
+        alert('Error de red: ' + (e.message || e));
+      } finally {
+        this.limpiandoIndigest = false;
+      }
+    },
+
     async marcarVisibles(marcado) {
       if (this.productos.length === 0) return;
       const ids = this.productos.map(p => p.id);
@@ -1713,7 +1888,7 @@ function productosApp() {
         this.snapshots = [];
         this.mostrarHistorial = false;
         this.competencia = {
-          guardados: [], candidatos: [], query: '', buscando: false,
+          guardados: [], candidatos: [], query: '', sitios_extra: '', buscando: false,
           seleccion: {}, resumen: null, error: '', mostrar: this.competencia.mostrar,
         };
         // Marca cual es el producto que estamos esperando. Si el usuario
@@ -1946,9 +2121,23 @@ function productosApp() {
       return null;
     },
 
-    // Etiqueta y color de badge por marketplace (Amazon / ML / Petco).
-    mpLabel(mk) { return {amazon_mx:'Amazon', mercadolibre_mx:'ML', petco_mx:'Petco'}[mk] || mk; },
+    // Etiqueta y color de badge por marketplace (Amazon / ML / Petco; sitios
+    // extra caen al fallback: el dominio como etiqueta y badge gris).
+    mpLabel(mk) { return {amazon_mx:'Amazon', mercadolibre_mx:'ML', petco_mx:'Petco', global:'Global'}[mk] || mk; },
     mpBadge(mk) { return {amazon_mx:'bg-yellow-200 text-yellow-900', mercadolibre_mx:'bg-blue-200 text-blue-900', petco_mx:'bg-rose-200 text-rose-900'}[mk] || 'bg-gray-200 text-gray-800'; },
+
+    // Filas del resumen de mercado: cada marketplace presente + Global al final.
+    filasResumen() {
+      const r = this.competencia.resumen;
+      if (!r) return [];
+      const filas = [];
+      Object.keys(r).forEach(k => {
+        if (k === 'global') return;
+        if (r[k] && r[k].prom) filas.push({ k, label: this.mpLabel(k), s: r[k] });
+      });
+      if (r.global && r.global.prom) filas.push({ k: 'global', label: 'Global', s: r.global });
+      return filas;
+    },
 
     async cargarCompetencia(producto_id) {
       try {
@@ -1974,7 +2163,10 @@ function productosApp() {
         const r = await fetch(`/api/productos/${this.detalle.producto_id}/competencia/buscar`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: this.competencia.query || null }),
+          body: JSON.stringify({
+            query: this.competencia.query || null,
+            sitios_extra: this.competencia.sitios_extra || null,
+          }),
         });
         const j = await r.json();
         if (!r.ok) { this.competencia.error = 'Error ' + r.status; return; }
@@ -2034,6 +2226,7 @@ function productosApp() {
       this.mostrarUploadPdf = true;
       this.uploadPdfFile = null;
       this.uploadPdfForzar = false;
+      this.uploadPdfProveedorId = '';
       this.uploadPdfResultado = null;
       this.uploadPdfElapsed = 0;
     },
@@ -2053,6 +2246,7 @@ function productosApp() {
       const fd = new FormData();
       fd.append('file', this.uploadPdfFile);
       fd.append('forzar', this.uploadPdfForzar ? 'true' : 'false');
+      if (this.uploadPdfProveedorId) fd.append('proveedor_id', this.uploadPdfProveedorId);
       this.subiendoPdf = true;
       this.uploadPdfElapsed = 0;
       this.uploadPdfResultado = null;
@@ -2114,11 +2308,18 @@ function productosApp() {
       if (status === 200 && body && body.ok) {
         const veredicto = body.veredicto || 'OK';
         const forzadoNota = body.forzado ? ' [forzado]' : '';
-        this.uploadPdfResultado = {
-          tipo: 'ok',
-          mensaje: `Proveedor "${body.proveedor}": +${body.productos_nuevos} productos nuevos `
-                 + `(${body.productos_totales_proveedor} totales). Veredicto: ${veredicto}${forzadoNota}.`,
-        };
+        let msg = `Proveedor "${body.proveedor}": +${body.productos_nuevos} productos nuevos `
+                + `(${body.productos_totales_proveedor} totales). Veredicto: ${veredicto}${forzadoNota}.`;
+        const dia = body.descripciones_ia;
+        if (dia) {
+          if (dia.error) msg += ` Descripcion IA: ${dia.error}.`;
+          else if (dia.descritos) {
+            msg += ` +${dia.descritos} descripciones IA (foto)`;
+            if (dia.clasificados) msg += `, ${dia.clasificados} clasificados`;
+            msg += '.';
+          }
+        }
+        this.uploadPdfResultado = { tipo: 'ok', mensaje: msg };
         // Refrescar grilla y filtros con los datos nuevos
         await this.cargarCategorias();
         await this.cargarProveedores();

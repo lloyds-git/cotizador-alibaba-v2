@@ -6,14 +6,104 @@
   <div class="mb-4 bg-white p-4 rounded shadow">
     <h2 class="text-lg font-bold mb-2">Aranceles</h2>
     <p class="text-sm text-gray-600 mb-3">
-      Dos capas: <strong>overrides</strong> (excepciones por categoria+material;
-      mas especifico gana) y <strong>estandar</strong> (tasa por
+      Tres capas: <strong>por categoria de producto</strong> (fraccion investigada
+      por IA o fijada a mano, por proyecto), <strong>overrides</strong> (excepciones
+      por categoria+material) y <strong>estandar</strong> (tasa por
       (categoria, subcategoria) del lookup_tariff; siembra desde
       <code>config/aranceles.yml</code>). Orden de resolucion:
-      override &gt; metal/35% &gt; estandar &gt; default-25%.
+      override &gt; <strong>categoria-confirmada</strong> &gt; metal/35% &gt; estandar &gt; default-25%.
     </p>
     <a href="/" class="text-sm text-gray-500 hover:underline">← Volver a productos</a>
   </div>
+
+  <!-- ─────────── Fracciones por categoria de producto (IA) ─────────── -->
+  <div class="mb-3 bg-white p-4 rounded shadow">
+    <h3 class="font-semibold text-base">Fracciones por categoria de producto</h3>
+    <p class="text-xs text-gray-500 mb-2">
+      Fraccion + tasa a nivel de las categorias de ESTE proyecto (las de la pagina
+      <a href="/categorias" class="text-blue-500 hover:underline">Categorias</a>). Se
+      llenan con "Proponer catalogo con IA" o a mano. Cuando estan
+      <span class="text-green-700 font-semibold">confirmadas</span> ganan sobre la
+      tabla estandar de abajo; las <span class="text-amber-700 font-semibold">pendientes</span>
+      aun no aplican (el motor usa el default).
+    </p>
+  </div>
+
+  <!-- Formulario editar arancel de CATEGORIA -->
+  <template x-if="formCatArancel">
+    <div class="mb-4 bg-white p-4 rounded shadow border-l-4 border-purple-500">
+      <h3 class="font-semibold mb-2">Arancel de
+        <span class="font-mono" x-text="formCatArancel.slug"></span></h3>
+      <p class="text-xs text-gray-500 mb-2">
+        Con fraccion (<span class="font-mono">NNNN.NN.NN</span>) + tasa queda
+        <span class="text-green-700 font-semibold">confirmada</span> y aplica a la
+        cotizacion. Deja la fraccion vacia para dejarla pendiente.
+      </p>
+      <div class="grid grid-cols-2 gap-3 text-sm">
+        <label>Fraccion arancelaria:
+          <input type="text" x-model="formCatArancel.fraccion" placeholder="6702.90.01"
+                 class="border rounded px-2 py-1 w-full mt-1 font-mono">
+        </label>
+        <label>Tasa %:
+          <input type="number" step="0.5" x-model.number="formCatArancel.tasa_pct"
+                 class="border rounded px-2 py-1 w-full mt-1 font-mono">
+        </label>
+        <label class="col-span-2">Nota (opcional):
+          <input type="text" x-model="formCatArancel.arancel_nota"
+                 class="border rounded px-2 py-1 w-full mt-1">
+        </label>
+      </div>
+      <div class="mt-3 flex gap-2">
+        <button type="button" @click="guardarCatArancel()"
+                class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm">
+          Guardar
+        </button>
+        <button type="button" @click="formCatArancel = null"
+                class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-sm">
+          Cancelar
+        </button>
+      </div>
+    </div>
+  </template>
+
+  <table class="bg-white w-full text-sm shadow rounded overflow-hidden mb-8">
+    <thead class="bg-gray-100 text-left">
+      <tr>
+        <th class="p-2">Categoria</th>
+        <th class="p-2">Fraccion</th>
+        <th class="p-2 text-right">Tasa %</th>
+        <th class="p-2">Estado</th>
+        <th class="p-2">Nota</th>
+        <th class="p-2"></th>
+      </tr>
+    </thead>
+    <tbody>
+      <template x-for="c in categoriasArancel" :key="c.id">
+        <tr class="border-t hover:bg-purple-50/40">
+          <td class="p-2 font-semibold font-mono" x-text="c.slug"></td>
+          <td class="p-2 font-mono" x-text="c.fraccion || '—'"></td>
+          <td class="p-2 text-right font-mono"
+              x-text="c.tasa_pct != null ? c.tasa_pct.toFixed(1) + '%' : '—'"></td>
+          <td class="p-2 text-xs" x-html="badgeEstado(c.arancel_estado)"></td>
+          <td class="p-2 text-xs text-gray-600">
+            <span x-text="c.arancel_nota || ''"></span>
+            <a x-show="c.arancel_fuente_url" :href="c.arancel_fuente_url" target="_blank"
+               class="text-blue-500 hover:underline ml-1">fuente</a>
+          </td>
+          <td class="p-2 text-right">
+            <button type="button" @click="editarCatArancel(c)"
+                    class="text-purple-600 hover:underline text-xs">editar</button>
+          </td>
+        </tr>
+      </template>
+      <tr x-show="categoriasArancel.length === 0">
+        <td colspan="6" class="p-4 text-center text-gray-500">
+          Este proyecto no tiene categorias. Usa "Proponer catalogo con IA" en
+          <a href="/categorias" class="text-blue-500 hover:underline">Categorias</a>.
+        </td>
+      </tr>
+    </tbody>
+  </table>
 
   <!-- ─────────── Overrides ─────────── -->
   <div class="mb-3 bg-white p-4 rounded shadow">
@@ -216,12 +306,54 @@ function arancelesApp(categoriasDisponibles) {
     categoriasDisponibles: categoriasDisponibles || [],
     aranceles: [],
     arancelesEstandar: [],
+    categoriasArancel: [],
     formulario: null,
     formularioEstandar: null,
+    formCatArancel: null,
 
     async init() {
+      await this.cargarCategoriasArancel();
       await this.cargar();
       await this.cargarEstandar();
+    },
+
+    async cargarCategoriasArancel() {
+      const r = await fetch('/api/catalogo/categorias');
+      const j = await r.json();
+      this.categoriasArancel = j.items;
+    },
+
+    badgeEstado(estado) {
+      if (estado === 'confirmado')
+        return '<span class="bg-green-100 text-green-700 px-2 py-0.5 rounded text-xs">confirmado</span>';
+      if (estado === 'pendiente')
+        return '<span class="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-xs">pendiente</span>';
+      return '<span class="text-gray-400 text-xs">sin arancel</span>';
+    },
+
+    editarCatArancel(c) {
+      this.formCatArancel = {
+        id: c.id, slug: c.slug,
+        fraccion: c.fraccion || '',
+        tasa_pct: c.tasa_pct,
+        arancel_nota: c.arancel_nota || '',
+      };
+    },
+
+    async guardarCatArancel() {
+      const f = this.formCatArancel;
+      const body = {
+        fraccion: (f.fraccion || '').trim() || null,
+        tasa_pct: (f.tasa_pct === '' ? null : f.tasa_pct),
+        arancel_nota: f.arancel_nota || null,
+      };
+      const r = await fetch(`/api/catalogo/categorias/${f.id}/arancel`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) { alert('Error: ' + r.status + ' ' + await r.text()); return; }
+      this.formCatArancel = null;
+      await this.cargarCategoriasArancel();
     },
 
     async cargar() {

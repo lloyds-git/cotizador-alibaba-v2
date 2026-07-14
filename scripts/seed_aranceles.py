@@ -34,11 +34,16 @@ def cargar_yaml(path: Path = YAML_PATH) -> list[dict]:
     return data.get("aranceles", [])
 
 
-def seed(reset: bool = False, path: Path = YAML_PATH) -> dict:
-    init_db()
+def seed(reset: bool = False, path: Path = YAML_PATH, session_factory=None) -> dict:
+    # session_factory permite sembrar en una BD concreta (p. ej. la plantilla,
+    # via app.db.asegurar_template). Si es None, opera sobre el proyecto por
+    # defecto (comportamiento historico).
+    if session_factory is None:
+        init_db()
+        session_factory = get_session_factory()
     entries = cargar_yaml(path)
 
-    Session = get_session_factory()
+    Session = session_factory
     with Session() as ses:
         if reset:
             borradas = ses.query(Arancel).delete()
