@@ -1313,6 +1313,13 @@ def _correr_llenar_formato_hd(
 
     formato_env = os.environ.get("FORMATO_HD_PATH")
     formato = Path(formato_env) if formato_env else proyecto / "Pet Quote Sheet 2026.xlsb"
+    # FORMATO_HD_PATH puede apuntar a una ruta del host (ej. /home/salomon/...)
+    # que no existe dentro del contenedor (el proyecto se monta en /app). Si la
+    # ruta configurada no existe, caer al template del proyecto por su nombre.
+    if not formato.exists():
+        alterno = proyecto / formato.name
+        if alterno.exists():
+            formato = alterno
 
     # Mapeo intermedio (18 cols) -> filas del HD destino. Fuente unica para ambas
     # rutas (Windows COM / Linux openpyxl):
